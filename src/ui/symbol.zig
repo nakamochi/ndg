@@ -1,0 +1,3 @@
+///! see lv_symbols_def.h
+pub const Warning = &[_]u8{ 0xef, 0x81, 0xb1 };
+pub const Ok = &[_]u8{ 0xef, 0x80, 0x8c };
