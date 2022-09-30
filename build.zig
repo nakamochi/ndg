@@ -45,7 +45,7 @@ pub fn build(b: *std.build.Builder) void {
     ngui.addCSourceFiles(&.{
         "src/ui/c/ui.c",
         "src/ui/c/lv_font_courierprimecode_14.c",
-        //"src/ui/c/lv_font_courierprimecode_16.c",
+        "src/ui/c/lv_font_courierprimecode_16.c",
         "src/ui/c/lv_font_courierprimecode_24.c",
     }, ngui_cflags);
 
