@@ -216,10 +216,26 @@ pub fn main() !void {
 /// shut down important services manually.
 /// TODO: make this OS-agnostic
 fn svShutdown(allocator: std.mem.Allocator) void {
-    // sv waits 7sec by default but bitcoind needs more
+    // sv waits 7sec by default but bitcoind and lnd need more
     // http://smarden.org/runit/
-    var stop_lnd = std.ChildProcess.init(&.{"sv", "-w", "25", "stop", "lnd"}, allocator);
-    _ = stop_lnd.spawnAndWait() catch |err| logger.err("stop lnd: {any}", .{err});
-    var stop_btc = std.ChildProcess.init(&.{"sv", "-w", "30", "stop", "bitcoind"}, allocator);
-    _ = stop_btc.spawnAndWait() catch |err| logger.err("stop bitcoind: {any}", .{err});
+    const Argv = []const []const u8;
+    const cmds: []const Argv = &.{
+        &.{"sv", "-w", "600", "stop", "lnd"},
+        &.{"sv", "-w", "600", "stop", "bitcoind"},
+    };
+    var procs: [cmds.len]?std.ChildProcess = undefined;
+    for (cmds) |argv, i| {
+        var p = std.ChildProcess.init(argv, allocator);
+        if (p.spawn()) {
+            procs[i] = p;
+        } else |err| {
+            logger.err("{s}: {any}", .{argv, err});
+        }
+    }
+    for (procs) |_, i| {
+        var p = procs[i];
+        if (p != null) {
+            _ = p.?.wait() catch |err| logger.err("{any}", .{err});
+        }
+    }
 }
