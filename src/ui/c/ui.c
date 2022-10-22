@@ -276,7 +276,7 @@ extern int ui_init()
           LV_FONT_DEFAULT);
   lv_disp_set_theme(disp, theme);
 
-  font_large = &lv_font_courierprimecode_24; /* static */
+  font_large = &lv_font_with_icons_24; /* static */
   lv_style_init(&style_title);
   lv_style_set_text_font(&style_title, font_large);
 
