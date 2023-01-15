@@ -56,6 +56,150 @@ static void create_lnd_panel(lv_obj_t* parent)
   lv_obj_center(label);
 }
 
+static void create_demo_panel(lv_obj_t* parent)
+{
+  lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+
+  lv_obj_t* label = lv_label_create(parent);
+  lv_label_set_text_static(label, "default font UPPER CASE\n"
+    " " LV_SYMBOL_AUDIO
+    " " LV_SYMBOL_VIDEO
+    " " LV_SYMBOL_LIST
+    " " LV_SYMBOL_OK
+    " " LV_SYMBOL_CLOSE
+    " " LV_SYMBOL_POWER
+    " " LV_SYMBOL_SETTINGS
+    " " LV_SYMBOL_HOME
+    " " LV_SYMBOL_DOWNLOAD
+    " " LV_SYMBOL_DRIVE
+    " " LV_SYMBOL_REFRESH
+    " " LV_SYMBOL_MUTE
+    " " LV_SYMBOL_VOLUME_MID
+    " " LV_SYMBOL_VOLUME_MAX
+    " " LV_SYMBOL_IMAGE
+    " " LV_SYMBOL_TINT "\n"
+    " " LV_SYMBOL_PREV
+    " " LV_SYMBOL_PLAY
+    " " LV_SYMBOL_PAUSE
+    " " LV_SYMBOL_STOP
+    " " LV_SYMBOL_NEXT
+    " " LV_SYMBOL_EJECT
+    " " LV_SYMBOL_LEFT
+    " " LV_SYMBOL_RIGHT
+    " " LV_SYMBOL_PLUS
+    " " LV_SYMBOL_MINUS
+    " " LV_SYMBOL_EYE_OPEN
+    " " LV_SYMBOL_EYE_CLOSE
+    " " LV_SYMBOL_WARNING
+    " " LV_SYMBOL_SHUFFLE
+    " " LV_SYMBOL_UP
+    " " LV_SYMBOL_DOWN
+    " " LV_SYMBOL_LOOP "\n"
+    " " LV_SYMBOL_DIRECTORY
+    " " LV_SYMBOL_UPLOAD
+    " " LV_SYMBOL_CALL
+    " " LV_SYMBOL_CUT
+    " " LV_SYMBOL_COPY
+    " " LV_SYMBOL_SAVE
+    " " LV_SYMBOL_BARS
+    " " LV_SYMBOL_ENVELOPE
+    " " LV_SYMBOL_CHARGE
+    " " LV_SYMBOL_PASTE
+    " " LV_SYMBOL_BELL
+    " " LV_SYMBOL_KEYBOARD
+    " " LV_SYMBOL_GPS
+    " " LV_SYMBOL_FILE
+    " " LV_SYMBOL_WIFI "\n"
+    " " LV_SYMBOL_BATTERY_FULL
+    " " LV_SYMBOL_BATTERY_3
+    " " LV_SYMBOL_BATTERY_2
+    " " LV_SYMBOL_BATTERY_1
+    " " LV_SYMBOL_BATTERY_EMPTY
+    " " LV_SYMBOL_USB
+    " " LV_SYMBOL_BLUETOOTH
+    " " LV_SYMBOL_TRASH
+    " " LV_SYMBOL_EDIT
+    " " LV_SYMBOL_BACKSPACE
+    " " LV_SYMBOL_SD_CARD
+    " " LV_SYMBOL_NEW_LINE
+    " " LV_SYMBOL_DUMMY
+    " " NM_SYMBOL_BOLT
+    " " NM_SYMBOL_BITCOIN
+    " " NM_SYMBOL_BITCOIN_SIGN
+  );
+  //lv_obj_center(label);
+
+  lv_obj_t* label2 = lv_label_create(parent);
+  lv_label_set_text_static(label2, "title style UPPER CASE\n"
+    " " LV_SYMBOL_AUDIO
+    " " LV_SYMBOL_VIDEO
+    " " LV_SYMBOL_LIST
+    " " LV_SYMBOL_OK
+    " " LV_SYMBOL_CLOSE
+    " " LV_SYMBOL_POWER
+    " " LV_SYMBOL_SETTINGS
+    " " LV_SYMBOL_HOME
+    " " LV_SYMBOL_DOWNLOAD
+    " " LV_SYMBOL_DRIVE
+    " " LV_SYMBOL_REFRESH
+    " " LV_SYMBOL_MUTE
+    " " LV_SYMBOL_VOLUME_MID
+    " " LV_SYMBOL_VOLUME_MAX
+    " " LV_SYMBOL_IMAGE
+    " " LV_SYMBOL_TINT "\n"
+    " " LV_SYMBOL_PREV
+    " " LV_SYMBOL_PLAY
+    " " LV_SYMBOL_PAUSE
+    " " LV_SYMBOL_STOP
+    " " LV_SYMBOL_NEXT
+    " " LV_SYMBOL_EJECT
+    " " LV_SYMBOL_LEFT
+    " " LV_SYMBOL_RIGHT
+    " " LV_SYMBOL_PLUS
+    " " LV_SYMBOL_MINUS
+    " " LV_SYMBOL_EYE_OPEN
+    " " LV_SYMBOL_EYE_CLOSE
+    " " LV_SYMBOL_WARNING
+    " " LV_SYMBOL_SHUFFLE
+    " " LV_SYMBOL_UP
+    " " LV_SYMBOL_DOWN
+    " " LV_SYMBOL_LOOP "\n"
+    " " LV_SYMBOL_DIRECTORY
+    " " LV_SYMBOL_UPLOAD
+    " " LV_SYMBOL_CALL
+    " " LV_SYMBOL_CUT
+    " " LV_SYMBOL_COPY
+    " " LV_SYMBOL_SAVE
+    " " LV_SYMBOL_BARS
+    " " LV_SYMBOL_ENVELOPE
+    " " LV_SYMBOL_CHARGE
+    " " LV_SYMBOL_PASTE
+    " " LV_SYMBOL_BELL
+    " " LV_SYMBOL_KEYBOARD
+    " " LV_SYMBOL_GPS
+    " " LV_SYMBOL_FILE
+    " " LV_SYMBOL_WIFI "\n"
+    " " LV_SYMBOL_BATTERY_FULL
+    " " LV_SYMBOL_BATTERY_3
+    " " LV_SYMBOL_BATTERY_2
+    " " LV_SYMBOL_BATTERY_1
+    " " LV_SYMBOL_BATTERY_EMPTY
+    " " LV_SYMBOL_USB
+    " " LV_SYMBOL_BLUETOOTH
+    " " LV_SYMBOL_TRASH
+    " " LV_SYMBOL_EDIT
+    " " LV_SYMBOL_BACKSPACE
+    " " LV_SYMBOL_SD_CARD
+    " " LV_SYMBOL_NEW_LINE
+    " " LV_SYMBOL_DUMMY
+    " " NM_SYMBOL_BOLT
+    " " NM_SYMBOL_BITCOIN
+    " " NM_SYMBOL_BITCOIN_SIGN
+  );
+  //lv_obj_center(label2);
+  lv_obj_add_style(label2, &style_title, 0);
+}
+
 static struct {
     lv_obj_t* wifi_spinner_obj;       /* lv_spinner_create */
     lv_obj_t* wifi_status_obj;        /* lv_label_create */
@@ -305,22 +449,32 @@ extern int ui_init()
    * 0: bitcoin
    * 1: lightning
    * 2: settings
+   * 3: a demo for testing purposes
    */
+
   lv_obj_t* tab_btc = lv_tabview_add_tab(tabview, NM_SYMBOL_BITCOIN " BITCOIN");
   if (tab_btc == NULL) {
       return -1;
   }
   create_bitcoin_panel(tab_btc);
+
   lv_obj_t* tab_lnd = lv_tabview_add_tab(tabview, NM_SYMBOL_BOLT " LIGHTNING");
   if (tab_lnd == NULL) {
       return -1;
   }
   create_lnd_panel(tab_lnd);
+
   lv_obj_t* tab_settings = lv_tabview_add_tab(tabview, LV_SYMBOL_SETTINGS " SETTINGS");
   if (tab_settings == NULL) {
       return -1;
   }
   create_settings_panel(tab_settings);
+
+  lv_obj_t* tab_demo = lv_tabview_add_tab(tabview, LV_SYMBOL_BULLET " DEMO");
+  if (tab_demo == NULL) {
+      return -1;
+  }
+  create_demo_panel(tab_demo);
 
   lv_obj_add_event_cb(tabview, tab_changed_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
   return 0;
