@@ -201,7 +201,7 @@ pub fn main() anyerror!void {
             return;
         }
         // sleep at least 1ms
-        time.sleep(@maximum(1, till_next_ms) * time.ns_per_ms);
+        time.sleep(@max(1, till_next_ms) * time.ns_per_ms);
     }
 }
 
