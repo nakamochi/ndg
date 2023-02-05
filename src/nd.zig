@@ -220,8 +220,8 @@ fn svShutdown(allocator: std.mem.Allocator) void {
     // http://smarden.org/runit/
     const Argv = []const []const u8;
     const cmds: []const Argv = &.{
-        &.{"sv", "-w", "600", "stop", "lnd"},
-        &.{"sv", "-w", "600", "stop", "bitcoind"},
+        &.{ "sv", "-w", "600", "stop", "lnd" },
+        &.{ "sv", "-w", "600", "stop", "bitcoind" },
     };
     var procs: [cmds.len]?std.ChildProcess = undefined;
     for (cmds) |argv, i| {
@@ -229,7 +229,7 @@ fn svShutdown(allocator: std.mem.Allocator) void {
         if (p.spawn()) {
             procs[i] = p;
         } else |err| {
-            logger.err("{s}: {any}", .{argv, err});
+            logger.err("{s}: {any}", .{ argv, err });
         }
     }
     for (procs) |_, i| {

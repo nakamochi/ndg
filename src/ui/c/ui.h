@@ -23,6 +23,6 @@ void nm_tab_settings_active();
  * initiate connection to a wifi network with the given SSID and a password.
  * connection, if successful, is persisted in wpa_supplicant config.
  */
-int nm_wifi_start_connect(const char* ssid, const char* password);
+int nm_wifi_start_connect(const char *ssid, const char *password);
 
 #endif

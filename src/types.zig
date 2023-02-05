@@ -11,4 +11,3 @@ pub const TestTimer = if (!builtin.is_test) @compileError("TestTimer is for test
         return self.value;
     }
 };
-

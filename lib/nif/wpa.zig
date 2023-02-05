@@ -90,7 +90,7 @@ pub const Control = struct {
 
     /// add a new blank network, returning its ID.
     /// the newly added network can be configured with self.setNetworkParam.
-    pub fn addNetwork(self: *Self) (Error||std.fmt.ParseIntError)!u32 {
+    pub fn addNetwork(self: *Self) (Error || std.fmt.ParseIntError)!u32 {
         var buf: [10:0]u8 = undefined;
         const resp = self.request("ADD_NETWORK", &buf, null) catch return error.WpaCtrlAddNetwork;
         return std.fmt.parseUnsigned(u32, mem.trim(u8, resp, "\n "), 10);
@@ -101,13 +101,13 @@ pub const Control = struct {
         const cmd = try std.fmt.bufPrintZ(&buf, "REMOVE_NETWORK {d}", .{id});
         return self.reqOK(cmd) catch return error.WpaCtrlRemoveNetwork;
     }
-    
+
     pub fn selectNetwork(self: *Self, id: u32) Error!void {
         var buf: [48:0]u8 = undefined;
         const cmd = try std.fmt.bufPrintZ(&buf, "SELECT_NETWORK {d}", .{id});
         return self.reqOK(cmd) catch return error.WpaCtrlSelectNetwork;
     }
-    
+
     pub fn enableNetwork(self: *Self, id: u32) Error!void {
         var buf: [48:0]u8 = undefined;
         const cmd = try std.fmt.bufPrintZ(&buf, "ENABLE_NETWORK {d}", .{id});
@@ -116,7 +116,7 @@ pub const Control = struct {
 
     pub fn setNetworkParam(self: *Self, id: u32, name: []const u8, value: []const u8) Error!void {
         var buf: [512:0]u8 = undefined;
-        const cmd = try std.fmt.bufPrintZ(&buf, "SET_NETWORK {d} {s} {s}", .{id, name, value});
+        const cmd = try std.fmt.bufPrintZ(&buf, "SET_NETWORK {d} {s} {s}", .{ id, name, value });
         return self.reqOK(cmd) catch return error.WpaCtrlSetNetworkParam;
     }
 
