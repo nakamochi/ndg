@@ -102,14 +102,8 @@ pub fn build(b: *std.build.Builder) void {
         tests.setTarget(target);
         tests.setBuildMode(mode);
         tests.linkLibC();
-        if (b.args) |args| {
-            for (args) |a, i| {
-                if (std.mem.eql(u8, a, "--test-filter")) {
-                    tests.setFilter(args[i + 1]); // don't care about OOB
-                    break;
-                }
-            }
-        }
+        const f = b.option([]const u8, "test-filter", "run tests matching the filter");
+        tests.setFilter(f);
 
         const test_step = b.step("test", "run tests");
         test_step.dependOn(&tests.step);
