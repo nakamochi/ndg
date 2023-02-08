@@ -1,8 +1,20 @@
-///! daemon <-> gui communication
+///! daemon/gui communication.
+///! the protocol is a simple TLV construct: MessageTag(u16), length(u64), json-marshalled Message;
+///! little endian.
 const std = @import("std");
 const json = std.json;
 const mem = std.mem;
 
+const ByteArrayList = @import("types.zig").ByteArrayList;
+
+/// common errors returned by read/write functions.
+pub const Error = error{
+    CommReadInvalidTag,
+    CommReadZeroLenInNonVoidTag,
+    CommWriteTooLarge,
+};
+
+/// daemon and gui exchange messages of this type.
 pub const Message = union(MessageTag) {
     ping: void,
     pong: void,
@@ -27,43 +39,42 @@ pub const Message = union(MessageTag) {
     };
 };
 
-pub const MessageTag = enum(u8) {
-    ping,
-    pong,
-    poweroff,
-    wifi_connect,
-    network_report,
-    get_network_report,
-};
-
-const Header = extern struct {
-    tag: MessageTag,
-    len: usize,
+/// it is important to preserve ordinal values for future compatiblity,
+/// especially when nd and gui may temporary diverge in their implementations.
+pub const MessageTag = enum(u16) {
+    ping = 0x01,
+    pong = 0x02,
+    poweroff = 0x03,
+    wifi_connect = 0x04,
+    network_report = 0x05,
+    get_network_report = 0x06,
+    // next: 0x07
 };
 
 /// reads and parses a single message from the input stream reader.
 /// callers must deallocate resources with free when done.
-pub fn read(allocator: mem.Allocator, reader: anytype) anyerror!Message {
-    const h = try reader.readStruct(Header);
-    if (h.len == 0) {
-        const m = switch (h.tag) {
+pub fn read(allocator: mem.Allocator, reader: anytype) !Message {
+    // alternative is @intToEnum(reader.ReadIntLittle(u16)) but it may panic.
+    const tag = reader.readEnum(MessageTag, .Little) catch {
+        return Error.CommReadInvalidTag;
+    };
+    const len = try reader.readIntLittle(u64);
+    if (len == 0) {
+        return switch (tag) {
             .ping => Message{ .ping = {} },
             .pong => Message{ .pong = {} },
             .poweroff => Message{ .poweroff = {} },
-            else => error.ZeroLenInNonVoidTag,
+            else => Error.CommReadZeroLenInNonVoidTag,
         };
-        return m;
     }
 
-    // TODO: limit h.len to some max value
-    var bytes = try allocator.alloc(u8, h.len);
+    var bytes = try allocator.alloc(u8, len);
     defer allocator.free(bytes);
     try reader.readNoEof(bytes);
-
     const jopt = json.ParseOptions{ .allocator = allocator, .ignore_unknown_fields = true };
     var jstream = json.TokenStream.init(bytes);
-    return switch (h.tag) {
-        .ping, .pong, .poweroff => unreachable, // void
+    return switch (tag) {
+        .ping, .pong, .poweroff => unreachable, // handled above
         .wifi_connect => Message{
             .wifi_connect = try json.parse(Message.WifiConnect, &jstream, jopt),
         },
@@ -79,30 +90,27 @@ pub fn read(allocator: mem.Allocator, reader: anytype) anyerror!Message {
 /// outputs the message msg using writer.
 /// all allocated resources are freed upon return.
 pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
-    var header = Header{ .tag = msg, .len = 0 };
-    switch (msg) {
-        .ping, .pong, .poweroff => return writer.writeStruct(header),
-        else => {}, // non-zero payload; continue
-    }
-
-    var data = std.ArrayList(u8).init(allocator);
-    defer data.deinit();
     const jopt = .{ .whitespace = null };
+    var data = ByteArrayList.init(allocator);
+    defer data.deinit();
     switch (msg) {
-        .ping, .pong, .poweroff => unreachable,
+        .ping, .pong, .poweroff => {}, // zero length payload
         .wifi_connect => try json.stringify(msg.wifi_connect, jopt, data.writer()),
         .network_report => try json.stringify(msg.network_report, jopt, data.writer()),
         .get_network_report => try json.stringify(msg.get_network_report, jopt, data.writer()),
     }
+    if (data.items.len > std.math.maxInt(u64)) {
+        return Error.CommWriteTooLarge;
+    }
 
-    header.len = data.items.len;
-    try writer.writeStruct(header);
+    try writer.writeIntLittle(u16, @enumToInt(msg));
+    try writer.writeIntLittle(u64, data.items.len);
     try writer.writeAll(data.items);
 }
 
 pub fn free(allocator: mem.Allocator, m: Message) void {
     switch (m) {
-        .ping, .pong, .poweroff => {},
+        .ping, .pong, .poweroff => {}, // zero length payload
         else => |v| {
             json.parseFree(@TypeOf(v), v, .{ .allocator = allocator });
         },
@@ -119,7 +127,8 @@ test "read" {
 
     var buf = std.ArrayList(u8).init(t.allocator);
     defer buf.deinit();
-    try buf.writer().writeStruct(Header{ .tag = msg, .len = data.items.len });
+    try buf.writer().writeIntLittle(u16, @enumToInt(msg));
+    try buf.writer().writeIntLittle(u64, data.items.len);
     try buf.writer().writeAll(data.items);
 
     var bs = std.io.fixedBufferStream(buf.items);
@@ -141,10 +150,11 @@ test "write" {
     const payload = "{\"ssid\":\"wlan\",\"password\":\"secret\"}";
     var js = std.ArrayList(u8).init(t.allocator);
     defer js.deinit();
-    try js.writer().writeStruct(Header{ .tag = msg, .len = payload.len });
+    try js.writer().writeIntLittle(u16, @enumToInt(msg));
+    try js.writer().writeIntLittle(u64, payload.len);
     try js.appendSlice(payload);
 
-    try t.expectEqualSlices(u8, js.items, buf.items);
+    try t.expectEqualStrings(js.items, buf.items);
 }
 
 test "write/read void tags" {
