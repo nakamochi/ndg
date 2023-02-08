@@ -6,7 +6,7 @@
 #include "lv_drivers/indev/evdev.h"
 #include "lvgl/lvgl.h"
 
-#define DISP_BUF_SIZE NM_DISP_HOR *NM_DISP_VER / 10
+#define DISP_BUF_SIZE (NM_DISP_HOR * NM_DISP_VER / 10)
 
 lv_disp_t *drv_init(void)
 {
