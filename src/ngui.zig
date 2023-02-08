@@ -19,10 +19,9 @@ const logger = std.log.scoped(.ngui);
 const lvgl_logger = std.log.scoped(.lvgl); // logs LV_LOG_xxx messages
 
 extern "c" fn lv_timer_handler() u32;
-extern "c" fn lv_log_register_print_cb(fn (msg: [*:0]const u8) callconv(.C) void) void;
+extern "c" fn lv_log_register_print_cb(*const fn (msg: [*:0]const u8) callconv(.C) void) void;
 const LvTimer = opaque {};
-//const LvTimerCallback = *const fn (timer: *LvTimer) callconv(.C) void; // stage2
-const LvTimerCallback = fn (timer: *LvTimer) callconv(.C) void;
+const LvTimerCallback = *const fn (timer: *LvTimer) callconv(.C) void;
 extern "c" fn lv_timer_create(callback: LvTimerCallback, period_ms: u32, userdata: ?*anyopaque) *LvTimer;
 extern "c" fn lv_timer_del(timer: *LvTimer) void;
 extern "c" fn lv_timer_set_repeat_count(timer: *LvTimer, n: i32) void;

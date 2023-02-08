@@ -2,8 +2,6 @@ const std = @import("std");
 const nifbuild = @import("lib/nif/build.zig");
 
 pub fn build(b: *std.build.Builder) void {
-    b.use_stage1 = true;
-
     const target = b.standardTargetOptions(.{});
     const mode = b.standardReleaseOptions();
     const strip = b.option(bool, "strip", "strip output binary; default: false") orelse false;
