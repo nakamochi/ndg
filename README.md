@@ -40,7 +40,38 @@ when browsing `git blame`:
 
     git config blame.ignoreRevsFile .git-blame-ignore-revs
 
-see also the contributing section.
+see also the [contributing](#contributing) section.
+
+## CI automated checks
+
+the CI runs code format checks, tests and builds for fbdev+evdev on aarch64
+and SDL2. it requires a container image with zig and clang tools such as
+clang-format.
+
+to make a new image and switch the CI to use it, first modify the
+[ci-containerfile](tools/ci-containerfile) and produce the image locally:
+
+    podman build --rm -t ndg-ci -f ./tools/ci-containerfile \
+      --build-arg ZIGURL=https://ziglang.org/download/0.10.1/zig-linux-x86_64-0.10.1.tar.xz
+
+then tag it with the target URL, for example:
+
+    podman tag localhost/ndg-ci git.qcode.ch/nakamochi/ci-zig0.10.1:v1
+
+generate an [access token](https://git.qcode.ch/user/settings/applications),
+login to the container registry and push the image to remote:
+
+    podman login git.qcode.ch
+    podman push git.qcode.ch/nakamochi/ci-zig0.10.1:v1
+
+the image will be available at
+https://git.qcode.ch/nakamochi/-/packages/
+
+finally, delete the access token from
+https://git.qcode.ch/user/settings/applications
+
+what's left is to update the CI [build pipeline](.woodpecker.yml) and delete
+the older version of the image.
 
 ## contributing
 

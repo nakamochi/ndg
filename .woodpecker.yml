@@ -1,0 +1,17 @@
+pipeline:
+  lint:
+    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v2
+    commands:
+      - ./tools/fmt-check.sh
+  test:
+    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v2
+    commands:
+      - zig build test
+  aarch64:
+    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v2
+    commands:
+      - zig build -Ddriver=fbev -Dtarget=aarch64-linux-musl
+  sdl2:
+    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v2
+    commands:
+      - zig build -Ddriver=sdl2
