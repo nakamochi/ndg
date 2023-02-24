@@ -9,7 +9,7 @@
 #define SDL_MAIN_HANDLED /* suppress "undefined reference to WinMain" */
 #include SDL_INCLUDE_PATH
 
-lv_disp_t *drv_init(void)
+lv_disp_t *nm_disp_init(void)
 {
     sdl_init();
     SDL_DisplayMode dm;
@@ -39,11 +39,11 @@ lv_disp_t *drv_init(void)
     disp_drv.hor_res = NM_DISP_HOR;
     disp_drv.ver_res = NM_DISP_VER;
     disp_drv.antialiasing = 1;
-    lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
-    if (disp == NULL) {
-        return NULL;
-    }
+    return lv_disp_drv_register(&disp_drv);
+}
 
+int nm_indev_init(void)
+{
     static lv_indev_drv_t mouse_drv;
     lv_indev_drv_init(&mouse_drv);
     mouse_drv.type = LV_INDEV_TYPE_POINTER;
@@ -51,15 +51,16 @@ lv_disp_t *drv_init(void)
     lv_indev_t *mouse = lv_indev_drv_register(&mouse_drv);
     if (mouse == NULL) {
         LV_LOG_WARN("lv_indev_drv_register(&mouse_drv) returned NULL");
+        return -1;
     }
 
     /* keypad input devices default group */
     lv_group_t *g = lv_group_create();
     if (g == NULL) {
         LV_LOG_WARN("lv_group_create returned NULL; won't set default group");
-    } else {
-        lv_group_set_default(g);
+        return -1;
     }
+    lv_group_set_default(g);
 
     static lv_indev_drv_t keyboard_drv;
     lv_indev_drv_init(&keyboard_drv);
@@ -68,9 +69,9 @@ lv_disp_t *drv_init(void)
     lv_indev_t *kb = lv_indev_drv_register(&keyboard_drv);
     if (kb == NULL) {
         LV_LOG_WARN("lv_indev_drv_register(&keyboard_drv) returned NULL");
-    } else if (g) {
-        lv_indev_set_group(kb, g);
+        return -1;
     }
+    lv_indev_set_group(kb, g);
 
-    return disp;
+    return 0;
 }

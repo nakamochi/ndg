@@ -7,8 +7,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-lv_disp_t *drv_init(void);
-
 static lv_style_t style_title;
 static lv_style_t style_text_muted;
 static lv_style_t style_btn_red;
@@ -260,13 +258,8 @@ static void tab_changed_event_cb(lv_event_t *e)
     }
 }
 
-extern int ui_init()
+extern int nm_ui_init(lv_disp_t *disp)
 {
-    lv_init();
-    lv_disp_t *disp = drv_init();
-    if (disp == NULL) {
-        return -1;
-    }
     /* default theme is static */
     lv_theme_t *theme = lv_theme_default_init(disp, /**/
         lv_palette_main(LV_PALETTE_BLUE),           /* primary */

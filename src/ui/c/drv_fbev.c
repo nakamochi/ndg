@@ -8,7 +8,8 @@
 
 #define DISP_BUF_SIZE (NM_DISP_HOR * NM_DISP_VER / 10)
 
-lv_disp_t *drv_init(void)
+/* returns NULL on error */
+lv_disp_t *nm_disp_init(void)
 {
     fbdev_init();
 
@@ -28,29 +29,30 @@ lv_disp_t *drv_init(void)
     disp_drv.ver_res = NM_DISP_VER;
     disp_drv.antialiasing = 1;
     disp_drv.flush_cb = fbdev_flush;
-    lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
-    if (disp == NULL) {
-        return NULL;
-    }
+    return lv_disp_drv_register(&disp_drv);
+}
+
+int nm_indev_init(void)
+{
+    /* lv driver correctly closes and opens evdev again if already inited */
+    evdev_init();
 
     /* keypad input devices default group;
      * future-proof: don't have any atm */
     lv_group_t *g = lv_group_create();
     if (g == NULL) {
-        return NULL;
+        return -1;
     }
     lv_group_set_default(g);
 
-    evdev_init();
     static lv_indev_drv_t touchpad_drv;
     lv_indev_drv_init(&touchpad_drv);
     touchpad_drv.type = LV_INDEV_TYPE_POINTER;
     touchpad_drv.read_cb = evdev_read;
     lv_indev_t *touchpad = lv_indev_drv_register(&touchpad_drv);
     if (touchpad == NULL) {
-        /* TODO: or continue without the touchpad? */
-        return NULL;
+        return -1;
     }
 
-    return disp;
+    return 0;
 }

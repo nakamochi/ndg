@@ -5,6 +5,8 @@ const Thread = std.Thread;
 
 const comm = @import("comm.zig");
 const types = @import("types.zig");
+const ui = @import("ui/ui.zig");
+const lvgl = @import("ui/lvgl.zig");
 const symbol = @import("ui/symbol.zig");
 
 /// SIGPIPE is triggered when a process attempts to write to a broken pipe.
@@ -16,17 +18,7 @@ pub const keep_sigpipe = true;
 const stdin = std.io.getStdIn().reader();
 const stdout = std.io.getStdOut().writer();
 const logger = std.log.scoped(.ngui);
-const lvgl_logger = std.log.scoped(.lvgl); // logs LV_LOG_xxx messages
 
-extern "c" fn lv_timer_handler() u32;
-extern "c" fn lv_log_register_print_cb(*const fn (msg: [*:0]const u8) callconv(.C) void) void;
-const LvTimer = opaque {};
-const LvTimerCallback = *const fn (timer: *LvTimer) callconv(.C) void;
-extern "c" fn lv_timer_create(callback: LvTimerCallback, period_ms: u32, userdata: ?*anyopaque) *LvTimer;
-extern "c" fn lv_timer_del(timer: *LvTimer) void;
-extern "c" fn lv_timer_set_repeat_count(timer: *LvTimer, n: i32) void;
-
-extern "c" fn ui_init() c_int;
 extern "c" fn ui_update_network_status(text: [*:0]const u8, wifi_list: ?[*:0]const u8) void;
 
 /// global heap allocator used throughout the gui program.
@@ -54,11 +46,6 @@ export fn nm_get_curr_tick() u32 {
     return @truncate(u32, ms);
 }
 
-export fn nm_lvgl_log(msg: [*:0]const u8) void {
-    const s = mem.span(msg);
-    lvgl_logger.debug("{s}", .{mem.trimRight(u8, s, "\n")});
-}
-
 /// initiate system shutdown.
 export fn nm_sys_shutdown() void {
     logger.info("initiating system shutdown", .{});
@@ -73,8 +60,8 @@ export fn nm_tab_settings_active() void {
     comm.write(gpa, stdout, msg) catch |err| logger.err("nm_tab_settings_active: {any}", .{err});
 }
 
-export fn nm_request_network_status(t: *LvTimer) void {
-    lv_timer_del(t);
+export fn nm_request_network_status(t: *lvgl.LvTimer) void {
+    lvgl.lv_timer_del(t);
     const msg: comm.Message = .{ .get_network_report = .{ .scan = false } };
     comm.write(gpa, stdout, msg) catch |err| logger.err("nm_request_network_status: {any}", .{err});
 }
@@ -127,8 +114,11 @@ fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
     // can happen with a fresh connection while dhcp is still in progress.
     if (report.wifi_ssid != null and report.ipaddrs.len == 0) {
         // TODO: sometimes this is too fast, not all ip addrs are avail (ipv4 vs ipv6)
-        var t = lv_timer_create(nm_request_network_status, 1000, null);
-        lv_timer_set_repeat_count(t, 1);
+        if (lvgl.lv_timer_create(nm_request_network_status, 1000, null)) |t| {
+            lvgl.lv_timer_set_repeat_count(t, 1);
+        } else {
+            logger.err("lv_timer_create network status failed: OOM?", .{});
+        }
     }
 }
 
@@ -179,21 +169,21 @@ pub fn main() anyerror!void {
     };
     gpa = gpa_state.allocator();
 
-    // info level log messages are by default printed only in Debug and ReleaseSafe build modes.
-    lv_log_register_print_cb(nm_lvgl_log);
-
-    const c_res = ui_init();
-    if (c_res != 0) {
-        logger.err("ui_init failed with code {}", .{c_res});
+    // initalizes display, input driver and finally creates the user interface.
+    ui.init() catch |err| {
+        logger.err("ui.init: {any}", .{err});
         std.process.exit(1);
-    }
+    };
+
+    // start comms with daemon in a seaparate thread.
     const th = try Thread.spawn(.{}, commThread, .{});
     th.detach();
 
+    // main UI thread; must never block unless in idle/sleep mode
     // TODO: handle sigterm
     while (true) {
         ui_mutex.lock();
-        var till_next_ms = lv_timer_handler();
+        var till_next_ms = lvgl.lv_timer_handler();
         const do_quit = quit;
         ui_mutex.unlock();
         if (do_quit) {

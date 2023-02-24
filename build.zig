@@ -8,6 +8,8 @@ pub fn build(b: *std.build.Builder) void {
     const drv = b.option(DriverTarget, "driver", "display and input drivers combo; default: sdl2") orelse .sdl2;
     const disp_horiz = b.option(u32, "horiz", "display horizontal pixels count; default: 800") orelse 800;
     const disp_vert = b.option(u32, "vert", "display vertical pixels count; default: 480") orelse 480;
+    const bopts = b.addOptions();
+    bopts.addOption(DriverTarget, "driver", drv);
 
     // gui build
     const ngui = b.addExecutable("ngui", "src/ngui.zig");
@@ -16,6 +18,7 @@ pub fn build(b: *std.build.Builder) void {
     ngui.pie = true;
     ngui.strip = strip;
 
+    ngui.addPackage(bopts.getPackage("build_options"));
     ngui.addIncludePath("lib");
     ngui.addIncludePath("src/ui/c");
     ngui.linkLibC();
@@ -80,6 +83,7 @@ pub fn build(b: *std.build.Builder) void {
     nd.pie = true;
     nd.strip = strip;
 
+    nd.addPackage(bopts.getPackage("build_options"));
     nifbuild.addPkg(b, nd, "lib/nif");
     const niflib = nifbuild.library(b, "lib/nif");
     niflib.setTarget(target);
