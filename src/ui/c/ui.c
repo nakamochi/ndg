@@ -14,6 +14,18 @@ static const lv_font_t *font_large;
 static lv_obj_t *virt_keyboard;
 static lv_obj_t *tabview; /* main tabs content parent; lv_tabview_create */
 
+lv_obj_t *nm_make_topdrop()
+{
+    lv_obj_t *topdrop = lv_obj_create(lv_layer_top());
+    if (!topdrop) {
+        return NULL;
+    }
+    lv_obj_set_style_bg_color(topdrop, lv_color_black(), 0);
+    lv_obj_clear_flag(topdrop, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_set_size(topdrop, LV_PCT(100), LV_PCT(100));
+    return topdrop;
+}
+
 static void textarea_event_cb(lv_event_t *e)
 {
     lv_obj_t *textarea = lv_event_get_target(e);

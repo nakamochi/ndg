@@ -6,6 +6,15 @@
 #include "lv_drivers/indev/evdev.h"
 #include "lvgl/lvgl.h"
 
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
+#if USE_BSD_EVDEV
+#include <dev/evdev/input.h>
+#else
+#include <linux/input.h>
+#endif
+
 #define DISP_BUF_SIZE (NM_DISP_HOR * NM_DISP_VER / 10)
 
 /* returns NULL on error */
@@ -55,4 +64,43 @@ int nm_indev_init(void)
     }
 
     return 0;
+}
+
+int nm_open_evdev_nonblock(void)
+{
+    // see lib/lv_drivers/indev/evdev.c
+#if USE_BSD_EVDEV
+    int fd = open(EVDEV_NAME, O_RDWR | O_NOCTTY);
+#else
+    int fd = open(EVDEV_NAME, O_RDWR | O_NOCTTY | O_NDELAY);
+#endif
+    if (fd == -1) {
+        return -1;
+    }
+#if USE_BSD_EVDEV
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+#else
+    fcntl(fd, F_SETFL, O_ASYNC | O_NONBLOCK);
+#endif
+    return fd;
+}
+
+void nm_close_evdev(int fd)
+{
+    if (fd != -1) {
+        close(fd);
+    }
+}
+
+bool nm_consume_input_events(int fd)
+{
+    if (fd == -1) {
+        return false;
+    }
+    struct input_event in;
+    int count = 0;
+    while (read(fd, &in, sizeof(struct input_event)) > 0) {
+        count++;
+    }
+    return count > 0;
 }

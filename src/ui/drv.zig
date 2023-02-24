@@ -26,3 +26,48 @@ pub fn initInput() !void {
         return error.InputInitFailed;
     }
 }
+
+/// deactivate and remove all input devices.
+pub fn deinitInput() void {
+    var indev = lvgl.lv_indev_get_next(null);
+    var count: usize = 0;
+    while (indev) |d| {
+        lvgl.lv_indev_delete(d);
+        count += 1;
+        indev = lvgl.lv_indev_get_next(null);
+    }
+    logger.debug("deinited {d} indev(s)", .{count});
+}
+
+pub usingnamespace switch (buildopts.driver) {
+    .sdl2 => struct {
+        pub fn InputWatcher() !type {
+            return error.InputWatcherUnavailable;
+        }
+    },
+    .fbev => struct {
+        extern "c" fn nm_open_evdev_nonblock() std.os.fd_t;
+        extern "c" fn nm_close_evdev(fd: std.os.fd_t) void;
+        extern "c" fn nm_consume_input_events(fd: std.os.fd_t) bool;
+
+        pub fn InputWatcher() !EvdevWatcher {
+            const fd = nm_open_evdev_nonblock();
+            if (fd == -1) {
+                return error.InputWatcherUnavailable;
+            }
+            return .{ .evdev_fd = fd };
+        }
+
+        pub const EvdevWatcher = struct {
+            evdev_fd: std.os.fd_t,
+
+            pub fn consume(self: @This()) bool {
+                return nm_consume_input_events(self.evdev_fd);
+            }
+
+            pub fn close(self: @This()) void {
+                nm_close_evdev(self.evdev_fd);
+            }
+        };
+    },
+};

@@ -7,6 +7,7 @@ const comm = @import("comm.zig");
 const types = @import("types.zig");
 const ui = @import("ui/ui.zig");
 const lvgl = @import("ui/lvgl.zig");
+const screen = @import("ui/screen.zig");
 const symbol = @import("ui/symbol.zig");
 
 /// SIGPIPE is triggered when a process attempts to write to a broken pipe.
@@ -30,6 +31,19 @@ var gpa: mem.Allocator = undefined;
 var ui_mutex: Thread.Mutex = .{};
 /// the program runs until quit is true.
 var quit: bool = false;
+var state: enum {
+    active, // normal operational mode
+    standby, // idling
+    alert, // draw user attention; never go standby
+} = .active;
+
+/// setting wakeup brings the screen back from sleep()'ing without waiting
+/// for user action.
+/// can be used by comms when an alert is received from the daemon, to draw
+/// user attention.
+/// safe for concurrent use except wakeup.reset() is UB during another thread
+/// wakeup.wait()'ing or timedWait'ing.
+var wakeup = Thread.ResetEvent{};
 
 /// a monotonic clock for reporting elapsed ticks to LVGL.
 /// the timer runs throughout the whole duration of the UI program.
@@ -44,6 +58,15 @@ export fn nm_get_curr_tick() u32 {
         return @truncate(u32, over); // LVGL deals with overflow correctly
     }
     return @truncate(u32, ms);
+}
+
+export fn nm_check_idle_time(_: *lvgl.LvTimer) void {
+    const standby_idle_ms = 60000; // 60sec
+    const idle_ms = lvgl.lv_disp_get_inactive_time(null);
+    logger.debug("idle: {d}", .{idle_ms});
+    if (idle_ms > standby_idle_ms and state != .alert) {
+        state = .standby;
+    }
 }
 
 /// initiate system shutdown.
@@ -179,16 +202,45 @@ pub fn main() anyerror!void {
     const th = try Thread.spawn(.{}, commThread, .{});
     th.detach();
 
+    // run idle timer indefinitely
+    if (lvgl.lv_timer_create(nm_check_idle_time, 2000, null)) |t| {
+        lvgl.lv_timer_set_repeat_count(t, -1);
+    } else {
+        logger.err("lv_timer_create idle failed: OOM?", .{});
+    }
+
     // main UI thread; must never block unless in idle/sleep mode
     // TODO: handle sigterm
     while (true) {
         ui_mutex.lock();
         var till_next_ms = lvgl.lv_timer_handler();
         const do_quit = quit;
+        const do_state = state;
         ui_mutex.unlock();
         if (do_quit) {
             return;
         }
+        if (do_state == .standby) {
+            // go into a screen sleep mode due to no user activity
+            wakeup.reset();
+            comm.write(gpa, stdout, comm.Message.standby) catch |err| {
+                logger.err("comm.write standby: {any}", .{err});
+            };
+            screen.sleep(&wakeup);
+            // wake up due to touch screen activity or wakeup event is set
+            logger.info("waking up from sleep", .{});
+            ui_mutex.lock();
+            if (state == .standby) {
+                state = .active;
+                comm.write(gpa, stdout, comm.Message.wakeup) catch |err| {
+                    logger.err("comm.write wakeup: {any}", .{err});
+                };
+                lvgl.lv_disp_trig_activity(null);
+            }
+            ui_mutex.unlock();
+            continue;
+        }
+        std.atomic.spinLoopHint();
         // sleep at least 1ms
         time.sleep(@max(1, till_next_ms) * time.ns_per_ms);
     }

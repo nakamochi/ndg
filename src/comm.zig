@@ -19,6 +19,8 @@ pub const Message = union(MessageTag) {
     ping: void,
     pong: void,
     poweroff: void,
+    standby: void,
+    wakeup: void,
     wifi_connect: WifiConnect,
     network_report: NetworkReport,
     get_network_report: GetNetworkReport,
@@ -48,7 +50,11 @@ pub const MessageTag = enum(u16) {
     wifi_connect = 0x04,
     network_report = 0x05,
     get_network_report = 0x06,
-    // next: 0x07
+    // ngui -> nd: screen timeout, no user activity; no reply
+    standby = 0x07,
+    // ngui -> nd: resume screen due to user touch; no reply
+    wakeup = 0x08,
+    // next: 0x09
 };
 
 /// reads and parses a single message from the input stream reader.
@@ -64,6 +70,8 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !Message {
             .ping => Message{ .ping = {} },
             .pong => Message{ .pong = {} },
             .poweroff => Message{ .poweroff = {} },
+            .standby => Message{ .standby = {} },
+            .wakeup => Message{ .wakeup = {} },
             else => Error.CommReadZeroLenInNonVoidTag,
         };
     }
@@ -74,7 +82,7 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !Message {
     const jopt = json.ParseOptions{ .allocator = allocator, .ignore_unknown_fields = true };
     var jstream = json.TokenStream.init(bytes);
     return switch (tag) {
-        .ping, .pong, .poweroff => unreachable, // handled above
+        .ping, .pong, .poweroff, .standby, .wakeup => unreachable, // handled above
         .wifi_connect => Message{
             .wifi_connect = try json.parse(Message.WifiConnect, &jstream, jopt),
         },
@@ -94,7 +102,7 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
     var data = ByteArrayList.init(allocator);
     defer data.deinit();
     switch (msg) {
-        .ping, .pong, .poweroff => {}, // zero length payload
+        .ping, .pong, .poweroff, .standby, .wakeup => {}, // zero length payload
         .wifi_connect => try json.stringify(msg.wifi_connect, jopt, data.writer()),
         .network_report => try json.stringify(msg.network_report, jopt, data.writer()),
         .get_network_report => try json.stringify(msg.get_network_report, jopt, data.writer()),
@@ -110,7 +118,7 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
 
 pub fn free(allocator: mem.Allocator, m: Message) void {
     switch (m) {
-        .ping, .pong, .poweroff => {}, // zero length payload
+        .ping, .pong, .poweroff, .standby, .wakeup => {}, // zero length payload
         else => |v| {
             json.parseFree(@TypeOf(v), v, .{ .allocator = allocator });
         },
@@ -167,6 +175,8 @@ test "write/read void tags" {
         Message.ping,
         Message.pong,
         Message.poweroff,
+        Message.standby,
+        Message.wakeup,
     };
 
     for (msg) |m| {

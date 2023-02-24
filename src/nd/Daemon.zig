@@ -7,7 +7,7 @@ const time = std.time;
 const nif = @import("nif");
 
 const comm = @import("../comm.zig");
-//const ioq = @import("../ioq.zig");
+const screen = @import("../ui/screen.zig");
 
 const logger = std.log.scoped(.netmon);
 
@@ -40,6 +40,14 @@ pub fn stop(self: *Daemon) void {
     if (self.main_thread) |th| {
         th.join();
     }
+}
+
+pub fn standby(_: *Daemon) !void {
+    try screen.backlight(.off);
+}
+
+pub fn wakeup(_: *Daemon) !void {
+    try screen.backlight(.on);
 }
 
 /// main thread entry point.

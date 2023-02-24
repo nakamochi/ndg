@@ -8,6 +8,7 @@ const nif = @import("nif");
 
 const comm = @import("comm.zig");
 const Daemon = @import("nd/Daemon.zig");
+const screen = @import("ui/screen.zig");
 
 const logger = std.log.scoped(.nd);
 const stderr = std.io.getStdErr().writer();
@@ -126,6 +127,12 @@ pub fn main() !void {
     const args = try parseArgs(gpa);
     defer args.deinit(gpa);
 
+    // reset the screen backlight to normal power regardless
+    // of its previous state.
+    screen.backlight(.on) catch |err| {
+        logger.err("backlight: {any}", .{err});
+    };
+
     // start ngui, unless -nogui mode
     var ngui = std.ChildProcess.init(&.{args.gui.?}, gpa);
     ngui.stdin_behavior = .Pipe;
@@ -196,6 +203,18 @@ pub fn main() !void {
             .wifi_connect => |req| {
                 nd.startConnectWifi(req.ssid, req.password) catch |err| {
                     logger.err("startConnectWifi: {any}", .{err});
+                };
+            },
+            .standby => {
+                logger.info("entering standby mode", .{});
+                nd.standby() catch |err| {
+                    logger.err("nd.standby: {any}", .{err});
+                };
+            },
+            .wakeup => {
+                logger.info("wakeup from standby", .{});
+                nd.wakeup() catch |err| {
+                    logger.err("nd.wakeup: {any}", .{err});
                 };
             },
             else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
