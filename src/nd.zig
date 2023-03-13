@@ -157,6 +157,11 @@ pub fn main() !void {
     // TODO: thread-safety, esp. uiwriter
     const uireader = ngui.stdout.?.reader();
     const uiwriter = ngui.stdin.?.writer();
+    // send UI a ping as the first thing to make sure pipes are working.
+    // https://git.qcode.ch/nakamochi/ndg/issues/16
+    comm.write(gpa, uiwriter, .ping) catch |err| {
+        logger.err("comm.write ping: {any}", .{err});
+    };
 
     // graceful shutdown; see sigaction(2)
     const sa = os.Sigaction{
@@ -191,7 +196,9 @@ pub fn main() !void {
         };
         logger.debug("got ui msg tagged {s}", .{@tagName(msg)});
         switch (msg) {
-            .pong => {},
+            .pong => {
+                logger.info("received pong from ngui", .{});
+            },
             .poweroff => {
                 logger.info("poweroff requested; terminating", .{});
                 quit = true;
