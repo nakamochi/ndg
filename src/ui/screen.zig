@@ -30,6 +30,7 @@ pub fn sleep(wake: *const Thread.ResetEvent) void {
             return;
         }
         std.atomic.spinLoopHint();
+        std.time.sleep(10 * std.time.ns_per_ms);
     }
 }
 
