@@ -1,11 +1,30 @@
+/**
+ * function declarations with nm_ prefix are typically defined in zig,
+ * while extern'ed function definitions with nm_ prefix are typically called from zig.
+ */
+
 #define _DEFAULT_SOURCE /* needed for usleep() */
 
 #include "lvgl/lvgl.h"
 
-#include "ui.h"
-
 #include <stdlib.h>
 #include <unistd.h>
+
+/**
+ * initiates system shutdown leading to poweroff.
+ */
+void nm_sys_shutdown();
+
+/**
+ * invoken when the UI is switched to the network settings tab.
+ */
+void nm_tab_settings_active();
+
+/**
+ * initiate connection to a wifi network with the given SSID and a password.
+ * connection, if successful, is persisted in wpa_supplicant config.
+ */
+int nm_wifi_start_connect(const char *ssid, const char *password);
 
 static lv_style_t style_title;
 static lv_style_t style_text_muted;

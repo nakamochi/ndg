@@ -54,7 +54,7 @@ pub fn build(b: *std.build.Builder) void {
     ngui.defineCMacroRaw(b.fmt("NM_DISP_VER={}", .{disp_vert}));
     ngui.defineCMacro("LV_CONF_INCLUDE_SIMPLE", null);
     ngui.defineCMacro("LV_TICK_CUSTOM", "1");
-    ngui.defineCMacro("LV_TICK_CUSTOM_INCLUDE", "\"ui.h\"");
+    ngui.defineCMacro("LV_TICK_CUSTOM_INCLUDE", "\"lv_custom_tick.h\"");
     ngui.defineCMacro("LV_TICK_CUSTOM_SYS_TIME_EXPR", "(nm_get_curr_tick())");
     switch (drv) {
         .sdl2 => {
