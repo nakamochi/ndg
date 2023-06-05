@@ -29,12 +29,12 @@ pub fn initInput() !void {
 
 /// deactivate and remove all input devices.
 pub fn deinitInput() void {
-    var indev = lvgl.lv_indev_get_next(null);
+    var indev: ?*lvgl.LvIndev = lvgl.LvIndev.first();
     var count: usize = 0;
     while (indev) |d| {
-        lvgl.lv_indev_delete(d);
+        d.destroy();
         count += 1;
-        indev = lvgl.lv_indev_get_next(null);
+        indev = lvgl.LvIndev.first();
     }
     logger.debug("deinited {d} indev(s)", .{count});
 }

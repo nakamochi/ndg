@@ -1,7 +1,5 @@
 const std = @import("std");
-const mem = std.mem;
 const time = std.time;
-const Thread = std.Thread;
 
 const comm = @import("comm.zig");
 const types = @import("types.zig");
@@ -24,11 +22,11 @@ extern "c" fn ui_update_network_status(text: [*:0]const u8, wifi_list: ?[*:0]con
 
 /// global heap allocator used throughout the gui program.
 /// TODO: thread-safety?
-var gpa: mem.Allocator = undefined;
+var gpa: std.mem.Allocator = undefined;
 
 /// the mutex must be held before any call reaching into lv_xxx functions.
 /// all nm_xxx functions assume it is the case since they are invoked from lvgl c code.
-var ui_mutex: Thread.Mutex = .{};
+var ui_mutex: std.Thread.Mutex = .{};
 /// the program runs until quit is true.
 var quit: bool = false;
 var state: enum {
@@ -43,7 +41,7 @@ var state: enum {
 /// user attention.
 /// safe for concurrent use except wakeup.reset() is UB during another thread
 /// wakeup.wait()'ing or timedWait'ing.
-var wakeup = Thread.ResetEvent{};
+var wakeup = std.Thread.ResetEvent{};
 
 /// a monotonic clock for reporting elapsed ticks to LVGL.
 /// the timer runs throughout the whole duration of the UI program.
@@ -62,14 +60,13 @@ export fn nm_get_curr_tick() u32 {
 
 export fn nm_check_idle_time(_: *lvgl.LvTimer) void {
     const standby_idle_ms = 60000; // 60sec
-    const idle_ms = lvgl.lv_disp_get_inactive_time(null);
-    logger.debug("idle: {d}", .{idle_ms});
+    const idle_ms = lvgl.idleTime();
     if (idle_ms > standby_idle_ms and state != .alert) {
         state = .standby;
     }
 }
 
-/// initiate system shutdown.
+/// initiate system shutdown leading to power off.
 export fn nm_sys_shutdown() void {
     logger.info("initiating system shutdown", .{});
     const msg = comm.Message.poweroff;
@@ -84,7 +81,7 @@ export fn nm_tab_settings_active() void {
 }
 
 export fn nm_request_network_status(t: *lvgl.LvTimer) void {
-    lvgl.lv_timer_del(t);
+    t.destroy();
     const msg: comm.Message = .{ .get_network_report = .{ .scan = false } };
     comm.write(gpa, stdout, msg) catch |err| logger.err("nm_request_network_status: {any}", .{err});
 }
@@ -92,8 +89,8 @@ export fn nm_request_network_status(t: *lvgl.LvTimer) void {
 /// ssid and password args must not outlive this function.
 export fn nm_wifi_start_connect(ssid: [*:0]const u8, password: [*:0]const u8) void {
     const msg = comm.Message{ .wifi_connect = .{
-        .ssid = mem.span(ssid),
-        .password = mem.span(password),
+        .ssid = std.mem.span(ssid),
+        .password = std.mem.span(password),
     } };
     logger.info("connect to wifi [{s}]", .{msg.wifi_connect.ssid});
     comm.write(gpa, stdout, msg) catch |err| {
@@ -108,7 +105,7 @@ fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
     var wifi_list: ?[:0]const u8 = null;
     var wifi_list_ptr: ?[*:0]const u8 = null;
     if (report.wifi_scan_networks.len > 0) {
-        wifi_list = try mem.joinZ(gpa, "\n", report.wifi_scan_networks);
+        wifi_list = try std.mem.joinZ(gpa, "\n", report.wifi_scan_networks);
         wifi_list_ptr = wifi_list.?.ptr;
     }
     defer if (wifi_list) |v| gpa.free(v);
@@ -124,7 +121,7 @@ fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
     }
 
     if (report.ipaddrs.len > 0) {
-        const ipaddrs = try mem.join(gpa, "\n", report.ipaddrs);
+        const ipaddrs = try std.mem.join(gpa, "\n", report.ipaddrs);
         defer gpa.free(ipaddrs);
         try w.print("\n\nIP addresses:\n{s}", .{ipaddrs});
     }
@@ -137,10 +134,10 @@ fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
     // can happen with a fresh connection while dhcp is still in progress.
     if (report.wifi_ssid != null and report.ipaddrs.len == 0) {
         // TODO: sometimes this is too fast, not all ip addrs are avail (ipv4 vs ipv6)
-        if (lvgl.lv_timer_create(nm_request_network_status, 1000, null)) |t| {
-            lvgl.lv_timer_set_repeat_count(t, 1);
-        } else {
-            logger.err("lv_timer_create network status failed: OOM?", .{});
+        if (lvgl.createTimer(nm_request_network_status, 1000, null)) |t| {
+            t.setRepeatCount(1);
+        } else |err| {
+            logger.err("network status timer failed: {any}", .{err});
         }
     }
 }
@@ -161,7 +158,8 @@ fn commThread() void {
 fn commThreadLoopCycle() !void {
     const msg = comm.read(gpa, stdin) catch |err| {
         if (err == error.EndOfStream) {
-            // pointless to continue running if comms is broken
+            // pointless to continue running if comms is broken.
+            // a parent/supervisor is expected to restart ngui.
             ui_mutex.lock();
             quit = true;
             ui_mutex.unlock();
@@ -199,21 +197,19 @@ pub fn main() anyerror!void {
     };
 
     // start comms with daemon in a seaparate thread.
-    const th = try Thread.spawn(.{}, commThread, .{});
+    const th = try std.Thread.spawn(.{}, commThread, .{});
     th.detach();
 
     // run idle timer indefinitely
-    if (lvgl.lv_timer_create(nm_check_idle_time, 2000, null)) |t| {
-        lvgl.lv_timer_set_repeat_count(t, -1);
-    } else {
-        logger.err("lv_timer_create idle failed: OOM?", .{});
-    }
+    _ = lvgl.createTimer(nm_check_idle_time, 2000, null) catch |err| {
+        logger.err("idle timer: lvgl.CreateTimer failed: {any}", .{err});
+    };
 
     // main UI thread; must never block unless in idle/sleep mode
     // TODO: handle sigterm
     while (true) {
         ui_mutex.lock();
-        var till_next_ms = lvgl.lv_timer_handler();
+        var till_next_ms = lvgl.loopCycle();
         const do_quit = quit;
         const do_state = state;
         ui_mutex.unlock();
@@ -235,7 +231,7 @@ pub fn main() anyerror!void {
                 comm.write(gpa, stdout, comm.Message.wakeup) catch |err| {
                     logger.err("comm.write wakeup: {any}", .{err});
                 };
-                lvgl.lv_disp_trig_activity(null);
+                lvgl.resetIdle();
             }
             ui_mutex.unlock();
             continue;

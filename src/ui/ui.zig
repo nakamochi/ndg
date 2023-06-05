@@ -2,12 +2,13 @@ const std = @import("std");
 
 const lvgl = @import("lvgl.zig");
 const drv = @import("drv.zig");
+const symbol = @import("symbol.zig");
+const widget = @import("widget.zig");
 
 const logger = std.log.scoped(.ui);
 
 extern "c" fn nm_ui_init(disp: *lvgl.LvDisp) c_int;
-extern "c" fn nm_make_topdrop() ?*lvgl.LvObj;
-extern "c" fn nm_remove_topdrop() void;
+extern fn nm_sys_shutdown() void;
 
 pub fn init() !void {
     lvgl.init();
@@ -23,26 +24,29 @@ pub fn init() !void {
     }
 }
 
-/// unsafe for concurrent use.
-pub fn topdrop(onoff: enum { show, remove }) void {
-    // a static construct: there can be only one global topdrop.
-    // see https://ziglang.org/documentation/master/#Static-Local-Variables
-    const S = struct {
-        var lv_obj: ?*lvgl.LvObj = null;
+/// called when "power off" button is pressed.
+export fn nm_poweroff_btn_callback(e: *lvgl.LvEvent) void {
+    _ = e;
+    const proceed: [*:0]const u8 = "PROCEED";
+    const abort: [*:0]const u8 = "CANCEL";
+    const title = " " ++ symbol.Power ++ " SHUTDOWN";
+    const text =
+        \\ARE YOU SURE?
+        \\
+        \\once shut down,
+        \\payments cannot go through via bitcoin or lightning networks
+        \\until the node is powered back on.
+    ;
+    widget.modal(title, text, &.{ proceed, abort }, poweroffModalCallback) catch |err| {
+        logger.err("shutdown btn: modal: {any}", .{err});
     };
-    switch (onoff) {
-        .show => {
-            if (S.lv_obj != null) {
-                return;
-            }
-            S.lv_obj = nm_make_topdrop();
-            lvgl.lv_refr_now(null);
-        },
-        .remove => {
-            if (S.lv_obj) |v| {
-                lvgl.lv_obj_del(v);
-                S.lv_obj = null;
-            }
-        },
+}
+
+fn poweroffModalCallback(btn_idx: usize) void {
+    // proceed = 0, cancel = 1
+    if (btn_idx != 0) {
+        return;
     }
+    // proceed with shutdown
+    nm_sys_shutdown();
 }

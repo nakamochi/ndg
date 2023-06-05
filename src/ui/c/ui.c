@@ -1,6 +1,6 @@
 /**
  * function declarations with nm_ prefix are typically defined in zig,
- * while extern'ed function definitions with nm_ prefix are typically called from zig.
+ * while function definitions with nm_ prefix are extern'ed to call from zig.
  */
 
 #define _DEFAULT_SOURCE /* needed for usleep() */
@@ -26,6 +26,11 @@ void nm_tab_settings_active();
  */
 int nm_wifi_start_connect(const char *ssid, const char *password);
 
+/**
+ * callback fn when "power off" button is pressed.
+ */
+void nm_poweroff_btn_callback(lv_event_t *e);
+
 static lv_style_t style_title;
 static lv_style_t style_text_muted;
 static lv_style_t style_btn_red;
@@ -33,16 +38,33 @@ static const lv_font_t *font_large;
 static lv_obj_t *virt_keyboard;
 static lv_obj_t *tabview; /* main tabs content parent; lv_tabview_create */
 
-lv_obj_t *nm_make_topdrop()
+/**
+ * returns user-managed data previously set on an object with nm_obj_set_userdata.
+ * the returned value may be NULL.
+ */
+extern void *nm_obj_userdata(lv_obj_t *obj)
 {
-    lv_obj_t *topdrop = lv_obj_create(lv_layer_top());
-    if (!topdrop) {
-        return NULL;
-    }
-    lv_obj_set_style_bg_color(topdrop, lv_color_black(), 0);
-    lv_obj_clear_flag(topdrop, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_set_size(topdrop, LV_PCT(100), LV_PCT(100));
-    return topdrop;
+    return obj->user_data;
+}
+
+/**
+ * set or "attach" user-managed data to an object.
+ * the data pointer may be NULL.
+ */
+extern void nm_obj_set_userdata(lv_obj_t *obj, void *data)
+{
+    obj->user_data = data;
+}
+
+/**
+ * returns a "red" style for a button. useful to attract particular attention
+ * to a potentially "dangerous" operation.
+ *
+ * the returned value is static. available only after nm_ui_init.
+ */
+extern lv_style_t *nm_style_btn_red()
+{
+    return &style_btn_red;
 }
 
 static void textarea_event_cb(lv_event_t *e)
@@ -125,35 +147,6 @@ static void wifi_connect_btn_callback(lv_event_t *e)
     nm_wifi_start_connect(buf, lv_textarea_get_text(settings.wifi_pwd_obj));
 }
 
-static void power_halt_btn_callback(lv_event_t *e)
-{
-    if (e->user_data) { /* ptr to msgbox */
-        lv_obj_t *msgbox = e->user_data;
-        /* first button is "proceed", do shutdown */
-        if (lv_msgbox_get_active_btn(msgbox) == 0) {
-            /* shutdown confirmed */
-            nm_sys_shutdown();
-        }
-        /* shutdown aborted or passthrough from confirmed shutdown.
-         * in the latter case, ui is still running for a brief moment,
-         * until ngui terminates. */
-        lv_msgbox_close(msgbox);
-        return;
-    }
-
-    /* first button must always be a "proceed", do shutdown;
-     * text is irrelevant */
-    static const char *btns[] = {"PROCEED", "ABORT", NULL};
-    lv_obj_t *msgbox = lv_msgbox_create(NULL, /* modal */
-        "SHUTDOWN",                           /* title */
-        "are you sure?",                      /* text */
-        btns,                                 /* */
-        false /* close btn */);
-    lv_obj_center(msgbox);
-    lv_obj_add_event_cb(msgbox, power_halt_btn_callback, LV_EVENT_VALUE_CHANGED, msgbox);
-    return;
-}
-
 static void create_settings_panel(lv_obj_t *parent)
 {
     /********************
@@ -221,7 +214,7 @@ static void create_settings_panel(lv_obj_t *parent)
     settings.power_halt_btn_obj = power_halt_btn;
     lv_obj_set_height(power_halt_btn, LV_SIZE_CONTENT);
     lv_obj_add_style(power_halt_btn, &style_btn_red, 0);
-    lv_obj_add_event_cb(power_halt_btn, power_halt_btn_callback, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(power_halt_btn, nm_poweroff_btn_callback, LV_EVENT_CLICKED, NULL);
     lv_obj_t *power_halt_btn_label = lv_label_create(power_halt_btn);
     lv_label_set_text_static(power_halt_btn_label, "SHUTDOWN");
     lv_obj_center(power_halt_btn_label);

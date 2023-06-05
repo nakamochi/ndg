@@ -4,7 +4,7 @@ const Thread = std.Thread;
 
 const lvgl = @import("lvgl.zig");
 const drv = @import("drv.zig");
-const ui = @import("ui.zig");
+const widget = @import("widget.zig");
 
 const logger = std.log.scoped(.screen);
 
@@ -14,10 +14,10 @@ const logger = std.log.scoped(.screen);
 /// a touch event triggers no accidental action.
 pub fn sleep(wake: *const Thread.ResetEvent) void {
     drv.deinitInput();
-    ui.topdrop(.show);
+    widget.topdrop(.show);
     defer {
         drv.initInput() catch |err| logger.err("drv.initInput: {any}", .{err});
-        ui.topdrop(.remove);
+        widget.topdrop(.remove);
     }
 
     const watcher = drv.InputWatcher() catch |err| {
