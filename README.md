@@ -26,6 +26,12 @@ compiling is expected to be as easy as
 the output is placed in `./zig-out/bin` directory. for example, to run the gui,
 simply execute `./zig-out/bin/ngui`.
 
+the build script has a few project-specific options. list them all with
+a `zig build --help` command. for instance, to reduce LVGL logging verbosity in
+debug build mode, one can set this extra build flag:
+
+    zig build ngui -Dlvgl_loglevel=warn
+
 run all tests with
 
     zig build test

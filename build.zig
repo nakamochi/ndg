@@ -4,12 +4,15 @@ const nifbuild = @import("lib/nif/build.zig");
 pub fn build(b: *std.build.Builder) void {
     const target = b.standardTargetOptions(.{});
     const mode = b.standardReleaseOptions();
+
     const strip = b.option(bool, "strip", "strip output binary; default: false") orelse false;
     const drv = b.option(DriverTarget, "driver", "display and input drivers combo; default: sdl2") orelse .sdl2;
     const disp_horiz = b.option(u32, "horiz", "display horizontal pixels count; default: 800") orelse 800;
     const disp_vert = b.option(u32, "vert", "display vertical pixels count; default: 480") orelse 480;
-    const bopts = b.addOptions();
-    bopts.addOption(DriverTarget, "driver", drv);
+    const lvgl_loglevel = b.option(LVGLLogLevel, "lvgl_loglevel", "LVGL lib logging level") orelse LVGLLogLevel.default(mode);
+
+    const buildopts = b.addOptions();
+    buildopts.addOption(DriverTarget, "driver", drv);
 
     // gui build
     const ngui = b.addExecutable("ngui", "src/ngui.zig");
@@ -18,7 +21,7 @@ pub fn build(b: *std.build.Builder) void {
     ngui.pie = true;
     ngui.strip = strip;
 
-    ngui.addPackage(bopts.getPackage("build_options"));
+    ngui.addPackage(buildopts.getPackage("build_options"));
     ngui.addIncludePath("lib");
     ngui.addIncludePath("src/ui/c");
     ngui.linkLibC();
@@ -53,6 +56,7 @@ pub fn build(b: *std.build.Builder) void {
     ngui.defineCMacroRaw(b.fmt("NM_DISP_HOR={}", .{disp_horiz}));
     ngui.defineCMacroRaw(b.fmt("NM_DISP_VER={}", .{disp_vert}));
     ngui.defineCMacro("LV_CONF_INCLUDE_SIMPLE", null);
+    ngui.defineCMacro("LV_LOG_LEVEL", lvgl_loglevel.text());
     ngui.defineCMacro("LV_TICK_CUSTOM", "1");
     ngui.defineCMacro("LV_TICK_CUSTOM_INCLUDE", "\"lv_custom_tick.h\"");
     ngui.defineCMacro("LV_TICK_CUSTOM_SYS_TIME_EXPR", "(nm_get_curr_tick())");
@@ -83,7 +87,7 @@ pub fn build(b: *std.build.Builder) void {
     nd.pie = true;
     nd.strip = strip;
 
-    nd.addPackage(bopts.getPackage("build_options"));
+    nd.addPackage(buildopts.getPackage("build_options"));
     nifbuild.addPkg(b, nd, "lib/nif");
     const niflib = nifbuild.library(b, "lib/nif");
     niflib.setTarget(target);
@@ -276,4 +280,37 @@ const lvgl_generic_src: []const []const u8 = &.{
     "lib/lvgl/src/widgets/lv_switch.c",
     "lib/lvgl/src/widgets/lv_table.c",
     "lib/lvgl/src/widgets/lv_textarea.c",
+};
+
+/// LVGL log levels based on LV_LOG_LEVEL_xxx.
+/// note that the messages are printed from a zig fn callback, always with .info std.log.Level.
+const LVGLLogLevel = enum {
+    trace,
+    info,
+    warn,
+    err,
+    user,
+    none,
+
+    /// returns default mode based on the compiler optimization flags.
+    /// similar to std.log.default_level.
+    fn default(mode: std.builtin.Mode) @This() {
+        return switch (mode) {
+            .Debug => .info,
+            .ReleaseSafe => .warn,
+            .ReleaseFast, .ReleaseSmall => .err,
+        };
+    }
+
+    /// returns a C #define value for LVGL config.
+    fn text(self: @This()) []const u8 {
+        return switch (self) {
+            .trace => "LV_LOG_LEVEL_TRACE",
+            .info => "LV_LOG_LEVEL_INFO",
+            .warn => "LV_LOG_LEVEL_WARN",
+            .err => "LV_LOG_LEVEL_ERROR",
+            .user => "LV_LOG_LEVEL_USER",
+            .none => "LV_LOG_LEVEL_NONE",
+        };
+    }
 };

@@ -29,11 +29,12 @@ fn lvglInit() void {
     lv_init();
 }
 
+/// logs messages from LVGL logging facilities; always with the same std.log level .info.
 export fn nm_lvgl_log(msg: [*:0]const u8) void {
     const s = std.mem.span(msg);
     // info level log messages are by default printed only in Debug
     // and ReleaseSafe build modes.
-    logger.debug("{s}", .{std.mem.trimRight(u8, s, "\n")});
+    logger.info("{s}", .{std.mem.trimRight(u8, s, "\n")});
 }
 
 /// the busy-wait loop cycle wrapper for LVGL.
