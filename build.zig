@@ -10,9 +10,11 @@ pub fn build(b: *std.build.Builder) void {
     const disp_horiz = b.option(u32, "horiz", "display horizontal pixels count; default: 800") orelse 800;
     const disp_vert = b.option(u32, "vert", "display vertical pixels count; default: 480") orelse 480;
     const lvgl_loglevel = b.option(LVGLLogLevel, "lvgl_loglevel", "LVGL lib logging level") orelse LVGLLogLevel.default(mode);
+    const inver = b.option([]const u8, "version", "semantic version of the build; must match git tag when available");
 
     const buildopts = b.addOptions();
     buildopts.addOption(DriverTarget, "driver", drv);
+    const semver_step = VersionStep.create(b, buildopts, inver);
 
     const common_cflags = .{
         "-Wall",
@@ -28,6 +30,7 @@ pub fn build(b: *std.build.Builder) void {
     ngui.setBuildMode(mode);
     ngui.pie = true;
     ngui.strip = strip;
+    ngui.step.dependOn(semver_step);
 
     ngui.addPackage(buildopts.getPackage("build_options"));
     ngui.addIncludePath("lib");
@@ -88,6 +91,7 @@ pub fn build(b: *std.build.Builder) void {
     nd.setBuildMode(mode);
     nd.pie = true;
     nd.strip = strip;
+    nd.step.dependOn(semver_step);
 
     nd.addPackage(buildopts.getPackage("build_options"));
     nifbuild.addPkg(b, nd, "lib/nif");
@@ -313,6 +317,78 @@ const LVGLLogLevel = enum {
             .err => "LV_LOG_LEVEL_ERROR",
             .user => "LV_LOG_LEVEL_USER",
             .none => "LV_LOG_LEVEL_NONE",
+        };
+    }
+};
+
+/// VersionStep injects a release build semantic version into buildopts as "semver".
+/// the make step fails if the inver input version and the one found in a git tag mismatch.
+///
+/// while git-tagged versions are expected to be in v<semver>format, input version
+/// to match against is any format supported by std.SemanticVersion.parse.
+/// input version is optional; if unset, make fn succeeds given a correctly formatted
+/// git tag is found.
+const VersionStep = struct {
+    inver: ?[]const u8, // input version in std.SemanticVersion.parse format
+    buildopts: *std.build.OptionsStep, // where to store the build version
+
+    b: *std.build.Builder,
+    step: std.build.Step,
+
+    fn create(b: *std.build.Builder, o: *std.build.OptionsStep, inver: ?[]const u8) *std.build.Step {
+        const vstep = b.allocator.create(VersionStep) catch unreachable;
+        vstep.* = VersionStep{
+            .inver = inver,
+            .buildopts = o,
+            .b = b,
+            .step = std.build.Step.init(.custom, "VersionStep: ndg semver", b.allocator, make),
+        };
+        return &vstep.step;
+    }
+
+    fn make(step: *std.build.Step) anyerror!void {
+        const self = @fieldParentPtr(VersionStep, "step", step);
+        const semver = try self.eval();
+        std.log.info("build version: {any}", .{semver});
+        self.buildopts.addOption(std.SemanticVersion, "semver", semver);
+    }
+
+    fn eval(self: *VersionStep) !std.SemanticVersion {
+        const repover = try self.gitver();
+        if (self.inver) |v| {
+            const insem = std.SemanticVersion.parse(v) catch |err| {
+                std.log.err("invalid input semver '{s}': {any}", .{ v, err });
+                return err;
+            };
+            if (repover != null and insem.order(repover.?) != .eq) {
+                std.log.err("input and repo semver mismatch: {any} vs {any}", .{ insem, repover });
+                return error.VersionMismatch;
+            }
+            return insem;
+        }
+
+        if (repover == null) {
+            std.log.err("must supply build semver from command line.", .{});
+            return error.MissingVersion;
+        }
+        return repover.?;
+    }
+
+    fn gitver(self: *VersionStep) !?std.SemanticVersion {
+        if (!std.process.can_spawn) {
+            return null;
+        }
+        const git = self.b.findProgram(&[_][]const u8{"git"}, &[_][]const u8{}) catch return null;
+
+        const prefix = "v"; // git tag prefix
+        const matchTag = self.b.fmt("{s}*.*.*", .{prefix});
+        const cmd = [_][]const u8{ git, "-C", self.b.pathFromRoot("."), "describe", "--match", matchTag, "--tags", "--abbrev=8" };
+        var code: u8 = undefined;
+        const git_describe = self.b.execAllowFail(&cmd, &code, .Ignore) catch return null;
+        const repotag = std.mem.trim(u8, git_describe, " \n\r")[prefix.len..];
+        return std.SemanticVersion.parse(repotag) catch |err| ret: {
+            std.log.err("unparsable git tag semver '{s}': {any}", .{ repotag, err });
+            break :ret err;
         };
     }
 };

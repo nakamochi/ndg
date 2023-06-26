@@ -1,3 +1,4 @@
+const buildopts = @import("build_options");
 const std = @import("std");
 const os = std.os;
 const sys = os.system;
@@ -86,6 +87,9 @@ fn parseArgs(gpa: std.mem.Allocator) !NdArgs {
         if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "-help") or std.mem.eql(u8, a, "--help")) {
             usage(prog) catch {};
             std.process.exit(1);
+        } else if (std.mem.eql(u8, a, "-v")) {
+            try stderr.print("{any}\n", .{buildopts.semver});
+            std.process.exit(0);
         } else if (std.mem.eql(u8, a, "-gui")) {
             lastarg = .gui;
         } else if (std.mem.eql(u8, a, "-gui-user")) {
@@ -126,6 +130,7 @@ pub fn main() !void {
     // parse program args first thing and fail fast if invalid
     const args = try parseArgs(gpa);
     defer args.deinit(gpa);
+    logger.info("ndg version {any}", .{buildopts.semver});
 
     // reset the screen backlight to normal power regardless
     // of its previous state.

@@ -6,7 +6,7 @@
 FROM alpine:3.17.1
 
 ARG ZIGURL
-RUN apk add --no-cache curl xz sdl2-dev clang15-extra-tools && \
+RUN apk add --no-cache git curl xz sdl2-dev clang15-extra-tools && \
     mkdir -p /tools/zig && \
     cd /tools/zig && \
     curl -o zig.tar.xz $ZIGURL && \
