@@ -14,6 +14,14 @@ pub fn build(b: *std.build.Builder) void {
     const buildopts = b.addOptions();
     buildopts.addOption(DriverTarget, "driver", drv);
 
+    const common_cflags = .{
+        "-Wall",
+        "-Wextra",
+        "-Wundef",
+        // strip source file paths for repro builds
+        b.fmt("-ffile-prefix-map={s}/=/", .{b.pathFromRoot("")}),
+    };
+
     // gui build
     const ngui = b.addExecutable("ngui", "src/ngui.zig");
     ngui.setTarget(target);
@@ -26,32 +34,26 @@ pub fn build(b: *std.build.Builder) void {
     ngui.addIncludePath("src/ui/c");
     ngui.linkLibC();
 
-    const lvgl_flags = &.{
+    const lvgl_flags = .{
         "-std=c11",
         "-fstack-protector",
-        "-Wall",
-        "-Wextra",
         "-Wformat",
         "-Wformat-security",
-        "-Wundef",
-    };
-    ngui.addCSourceFiles(lvgl_generic_src, lvgl_flags);
+    } ++ common_cflags;
+    ngui.addCSourceFiles(lvgl_generic_src, &lvgl_flags);
 
-    const ngui_cflags: []const []const u8 = &.{
+    const ngui_cflags = .{
         "-std=c11",
-        "-Wall",
-        "-Wextra",
         "-Wshadow",
-        "-Wundef",
         "-Wunused-parameter",
         "-Werror",
-    };
+    } ++ common_cflags;
     ngui.addCSourceFiles(&.{
         "src/ui/c/ui.c",
         "src/ui/c/lv_font_courierprimecode_14.c",
         "src/ui/c/lv_font_courierprimecode_16.c",
         "src/ui/c/lv_font_courierprimecode_24.c",
-    }, ngui_cflags);
+    }, &ngui_cflags);
 
     ngui.defineCMacroRaw(b.fmt("NM_DISP_HOR={}", .{disp_horiz}));
     ngui.defineCMacroRaw(b.fmt("NM_DISP_VER={}", .{disp_vert}));
@@ -62,15 +64,15 @@ pub fn build(b: *std.build.Builder) void {
     ngui.defineCMacro("LV_TICK_CUSTOM_SYS_TIME_EXPR", "(nm_get_curr_tick())");
     switch (drv) {
         .sdl2 => {
-            ngui.addCSourceFiles(lvgl_sdl2_src, lvgl_flags);
-            ngui.addCSourceFile("src/ui/c/drv_sdl2.c", ngui_cflags);
+            ngui.addCSourceFiles(lvgl_sdl2_src, &lvgl_flags);
+            ngui.addCSourceFile("src/ui/c/drv_sdl2.c", &ngui_cflags);
             ngui.defineCMacro("NM_DRV_SDL2", null);
             ngui.defineCMacro("USE_SDL", null);
             ngui.linkSystemLibrary("SDL2");
         },
         .fbev => {
-            ngui.addCSourceFiles(lvgl_fbev_src, lvgl_flags);
-            ngui.addCSourceFile("src/ui/c/drv_fbev.c", ngui_cflags);
+            ngui.addCSourceFiles(lvgl_fbev_src, &lvgl_flags);
+            ngui.addCSourceFile("src/ui/c/drv_fbev.c", &ngui_cflags);
             ngui.defineCMacro("NM_DRV_FBEV", null);
             ngui.defineCMacro("USE_FBDEV", null);
             ngui.defineCMacro("USE_EVDEV", null);
