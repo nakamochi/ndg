@@ -1,3 +1,4 @@
+const buildopts = @import("build_options");
 const std = @import("std");
 const time = std.time;
 
@@ -16,6 +17,7 @@ pub const keep_sigpipe = true;
 
 const stdin = std.io.getStdIn().reader();
 const stdout = std.io.getStdOut().writer();
+const stderr = std.io.getStdErr().writer();
 const logger = std.log.scoped(.ngui);
 
 extern "c" fn ui_update_network_status(text: [*:0]const u8, wifi_list: ?[*:0]const u8) void;
@@ -177,18 +179,59 @@ fn commThreadLoopCycle() !void {
     }
 }
 
+/// prints messages in the same way std.fmt.format does and exits the process
+/// with a non-zero code.
+fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
+    stderr.print(fmt, args) catch {};
+    if (fmt[fmt.len - 1] != '\n') {
+        stderr.writeByte('\n') catch {};
+    }
+    std.process.exit(1);
+}
+
+fn parseArgs(alloc: std.mem.Allocator) !void {
+    var args = try std.process.ArgIterator.initWithAllocator(alloc);
+    defer args.deinit();
+    const prog = args.next() orelse return error.NoProgName;
+
+    while (args.next()) |a| {
+        if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "-help") or std.mem.eql(u8, a, "--help")) {
+            usage(prog) catch {};
+            std.process.exit(1);
+        } else if (std.mem.eql(u8, a, "-v")) {
+            try stderr.print("{any}\n", .{buildopts.semver});
+            std.process.exit(0);
+        } else {
+            fatal("unknown arg name {s}", .{a});
+        }
+    }
+}
+
+/// prints usage help text to stderr.
+fn usage(prog: []const u8) !void {
+    try stderr.print(
+        \\usage: {s} [-v]
+        \\
+        \\ngui is nakamochi GUI interface. it communicates with nd, nakamochi daemon,
+        \\via stdio and is typically launched by the daemon as a child process.
+        \\
+    , .{prog});
+}
+
 /// nakamochi UI program entry point.
 pub fn main() anyerror!void {
-    // ensure timer is available on this platform before doing anything else;
-    // the UI is unusable otherwise.
-    tick_timer = try time.Timer.start();
-
     // main heap allocator used through the lifetime of nd
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa_state.deinit()) {
         logger.err("memory leaks detected", .{});
     };
     gpa = gpa_state.allocator();
+    try parseArgs(gpa);
+    logger.info("ndg version {any}", .{buildopts.semver});
+
+    // ensure timer is available on this platform before doing anything else;
+    // the UI is unusable otherwise.
+    tick_timer = try time.Timer.start();
 
     // initalizes display, input driver and finally creates the user interface.
     ui.init() catch |err| {

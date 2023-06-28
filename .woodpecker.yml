@@ -1,18 +1,27 @@
+clone:
+  git:
+    image: woodpeckerci/plugin-git
+    # https://woodpecker-ci.org/plugins/Git%20Clone
+    settings:
+      # tags are required for aarch64 release builds for semver
+      tags: true
+      lfs: false
+      recursive: false
 pipeline:
   lint:
-    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v2
+    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v3
     commands:
       - ./tools/fmt-check.sh
   test:
-    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v2
+    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v3
     commands:
       - zig build test
   sdl2:
-    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v2
+    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v3
     commands:
       - zig build -Ddriver=sdl2
   aarch64:
-    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v2
+    image: git.qcode.ch/nakamochi/ci-zig0.10.1:v3
     commands:
       - zig build -Ddriver=fbev -Dtarget=aarch64-linux-musl -Drelease-safe -Dstrip
       - sha256sum zig-out/bin/nd zig-out/bin/ngui

@@ -357,6 +357,7 @@
 #define NM_SYMBOL_BITCOIN       "\xEF\x8D\xB9" /* 0xF379 */
 #define NM_SYMBOL_BITCOIN_SIGN  "\xEE\x82\xB4" /* 0xE0B4 */
 #define NM_SYMBOL_BOLT          "\xEF\x83\xA7" /* 0xF0E7 */
+#define NM_SYMBOL_INFO          "\xEF\x81\x9A" /* 0xF05A */
 
 /*Enable handling large font and/or fonts with a lot of characters.
  *The limit depends on the font size, font face and bpp.

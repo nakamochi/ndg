@@ -16,6 +16,11 @@
 void nm_sys_shutdown();
 
 /**
+ * creates an info panel with build info, semver, about and other related items.
+ */
+int nm_create_info_panel(lv_obj_t *parent);
+
+/**
  * invoken when the UI is switched to the network settings tab.
  */
 void nm_tab_settings_active();
@@ -321,22 +326,41 @@ extern int nm_ui_init(lv_disp_t *disp)
      * 0: bitcoin
      * 1: lightning
      * 2: settings
+     * 3: ndg build info and versioning
      */
+
     lv_obj_t *tab_btc = lv_tabview_add_tab(tabview, NM_SYMBOL_BITCOIN " BITCOIN");
     if (tab_btc == NULL) {
         return -1;
     }
     create_bitcoin_panel(tab_btc);
+
     lv_obj_t *tab_lnd = lv_tabview_add_tab(tabview, NM_SYMBOL_BOLT " LIGHTNING");
     if (tab_lnd == NULL) {
         return -1;
     }
     create_lnd_panel(tab_lnd);
+
     lv_obj_t *tab_settings = lv_tabview_add_tab(tabview, LV_SYMBOL_SETTINGS " SETTINGS");
     if (tab_settings == NULL) {
         return -1;
     }
     create_settings_panel(tab_settings);
+
+    lv_obj_t *tab_info = lv_tabview_add_tab(tabview, NM_SYMBOL_INFO);
+    if (tab_info == NULL) {
+        return -1;
+    }
+    if (nm_create_info_panel(tab_info) != 0) {
+        return -1;
+    }
+
+    /* make the info tab button narrower, just for the icon to fit,
+     * by widening the other tab buttons relative width. */
+    lv_obj_t *tabbs = lv_tabview_get_tab_btns(tabview);
+    lv_btnmatrix_set_btn_width(tabbs, 0, 3);
+    lv_btnmatrix_set_btn_width(tabbs, 1, 3);
+    lv_btnmatrix_set_btn_width(tabbs, 2, 3);
 
     lv_obj_add_event_cb(tabview, tab_changed_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
     return 0;
