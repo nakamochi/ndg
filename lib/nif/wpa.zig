@@ -3,11 +3,11 @@ const mem = std.mem;
 const Thread = std.Thread;
 
 const WPACtrl = opaque {};
-const WPAReqCallback = *const fn ([*:0]const u8, usize) callconv(.C) void;
+pub const ReqCallback = *const fn ([*:0]const u8, usize) callconv(.C) void;
 
 extern fn wpa_ctrl_open(ctrl_path: [*:0]const u8) ?*WPACtrl;
 extern fn wpa_ctrl_close(ctrl: *WPACtrl) void;
-extern fn wpa_ctrl_request(ctrl: *WPACtrl, cmd: [*:0]const u8, clen: usize, reply: [*:0]u8, rlen: *usize, cb: ?WPAReqCallback) c_int;
+extern fn wpa_ctrl_request(ctrl: *WPACtrl, cmd: [*:0]const u8, clen: usize, reply: [*:0]u8, rlen: *usize, cb: ?ReqCallback) c_int;
 extern fn wpa_ctrl_pending(ctrl: *WPACtrl) c_int;
 extern fn wpa_ctrl_recv(ctrl: *WPACtrl, reply: [*:0]u8, reply_len: *usize) c_int;
 
@@ -130,7 +130,7 @@ pub const Control = struct {
 
     /// send a command to the control interface, returning a response owned by buf.
     /// callback receives a message from the same buf.
-    pub fn request(self: Self, cmd: [:0]const u8, buf: [:0]u8, callback: ?WPAReqCallback) Error![]const u8 {
+    pub fn request(self: Self, cmd: [:0]const u8, buf: [:0]u8, callback: ?ReqCallback) Error![]const u8 {
         //self.mu.lock();
         //defer self.mu.unlock();
         var n: usize = buf.len;

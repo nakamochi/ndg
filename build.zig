@@ -114,6 +114,9 @@ pub fn build(b: *std.build.Builder) void {
         tests.setTarget(target);
         tests.setBuildMode(mode);
         tests.linkLibC();
+        tests.addPackage(buildopts.getPackage("build_options"));
+        nifbuild.addPkg(b, tests, "lib/nif");
+
         const f = b.option([]const u8, "test-filter", "run tests matching the filter");
         tests.setFilter(f);
 

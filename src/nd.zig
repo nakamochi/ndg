@@ -111,13 +111,17 @@ fn parseArgs(gpa: std.mem.Allocator) !NdArgs {
     return flags;
 }
 
-/// quit signals nd to exit.
-/// TODO: thread-safety?
-var quit = false;
+/// sigquit signals nd main loop to exit.
+/// since both the loop and sighandler are on the same thread, it must
+/// not be guarded by a mutex which otherwise leads to a dealock.
+var sigquit = false;
 
 fn sighandler(sig: c_int) callconv(.C) void {
-    logger.info("got signal {}; exiting...\n", .{sig});
-    quit = true;
+    logger.info("received signal {}", .{sig});
+    switch (sig) {
+        os.SIG.INT, os.SIG.TERM => sigquit = true,
+        else => {},
+    }
 }
 
 pub fn main() !void {
@@ -134,9 +138,7 @@ pub fn main() !void {
 
     // reset the screen backlight to normal power regardless
     // of its previous state.
-    screen.backlight(.on) catch |err| {
-        logger.err("backlight: {any}", .{err});
-    };
+    screen.backlight(.on) catch |err| logger.err("backlight: {any}", .{err});
 
     // start ngui, unless -nogui mode
     var ngui = std.ChildProcess.init(&.{args.gui.?}, gpa);
@@ -156,9 +158,8 @@ pub fn main() !void {
     //ngui.uid = uiuser.uid;
     //ngui.gid = uiuser.gid;
     // ngui.env_map = ...
-    ngui.spawn() catch |err| {
-        fatal("unable to start ngui: {any}", .{err});
-    };
+    ngui.spawn() catch |err| fatal("unable to start ngui: {any}", .{err});
+
     // TODO: thread-safety, esp. uiwriter
     const uireader = ngui.stdout.?.reader();
     const uiwriter = ngui.stdin.?.writer();
@@ -175,24 +176,25 @@ pub fn main() !void {
         .flags = 0,
     };
     try os.sigaction(os.SIG.INT, &sa, null);
-    //TODO: try os.sigaction(os.SIG.TERM, &sa, null);
+    try os.sigaction(os.SIG.TERM, &sa, null);
 
-    // start network monitor
-    var ctrl = try nif.wpa.Control.open(args.wpa.?);
-    defer ctrl.close() catch {};
-    var nd: Daemon = .{
-        .allocator = gpa,
-        .uiwriter = uiwriter,
-        .wpa_ctrl = ctrl,
-    };
+    var nd = try Daemon.init(gpa, uiwriter, args.wpa.?);
+    defer nd.deinit();
     try nd.start();
     // send the UI network report right away, without scanning wifi
     nd.reportNetworkStatus(.{ .scan = false });
 
-    // comm with ui loop; run until exit is requested
     var poweroff = false;
-    while (!quit) {
+    // ngui -> nd comm loop; run until exit is requested
+    // TODO: move this loop to Daemon.zig? but what about quit and keep ngui running
+    while (!sigquit) {
         time.sleep(100 * time.ns_per_ms);
+        if (poweroff) {
+            // GUI is not expected to send anything back at this point,
+            // so just loop until we're terminated by a SIGTERM (sigquit).
+            continue;
+        }
+
         // note: uireader.read is blocking
         // TODO: handle error.EndOfStream - ngui exited
         const msg = comm.read(gpa, uireader) catch |err| {
@@ -205,9 +207,11 @@ pub fn main() !void {
                 logger.info("received pong from ngui", .{});
             },
             .poweroff => {
-                logger.info("poweroff requested; terminating", .{});
-                quit = true;
                 poweroff = true;
+                nd.beginPoweroff() catch |err| {
+                    logger.err("beginPoweroff: {any}", .{err});
+                    poweroff = false;
+                };
             },
             .get_network_report => |req| {
                 nd.reportNetworkStatus(.{ .scan = req.scan });
@@ -234,39 +238,10 @@ pub fn main() !void {
         comm.free(gpa, msg);
     }
 
-    // shutdown
+    // reached here due to sig TERM or INT;
+    // note: poweroff does not terminate the loop and instead initiates
+    // a system shutdown which in turn should terminate this process via a SIGTERM.
+    // so, there's no difference whether we're exiting due to poweroff of a SIGTERM here.
     _ = ngui.kill() catch |err| logger.err("ngui.kill: {any}", .{err});
     nd.stop();
-    if (poweroff) {
-        svShutdown(gpa);
-        var off = std.ChildProcess.init(&.{"poweroff"}, gpa);
-        _ = try off.spawnAndWait();
-    }
-}
-
-/// shut down important services manually.
-/// TODO: make this OS-agnostic
-fn svShutdown(allocator: std.mem.Allocator) void {
-    // sv waits 7sec by default but bitcoind and lnd need more
-    // http://smarden.org/runit/
-    const Argv = []const []const u8;
-    const cmds: []const Argv = &.{
-        &.{ "sv", "-w", "600", "stop", "lnd" },
-        &.{ "sv", "-w", "600", "stop", "bitcoind" },
-    };
-    var procs: [cmds.len]?std.ChildProcess = undefined;
-    for (cmds) |argv, i| {
-        var p = std.ChildProcess.init(argv, allocator);
-        if (p.spawn()) {
-            procs[i] = p;
-        } else |err| {
-            logger.err("{s}: {any}", .{ argv, err });
-        }
-    }
-    for (procs) |_, i| {
-        var p = procs[i];
-        if (p != null) {
-            _ = p.?.wait() catch |err| logger.err("{any}", .{err});
-        }
-    }
 }

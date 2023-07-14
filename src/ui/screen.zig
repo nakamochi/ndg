@@ -1,4 +1,5 @@
 ///! display and touch screen helper functions.
+const builtin = @import("builtin");
 const std = @import("std");
 const Thread = std.Thread;
 
@@ -36,7 +37,7 @@ pub fn sleep(wake: *const Thread.ResetEvent) void {
 
 /// turn on or off display backlight.
 pub fn backlight(onoff: enum { on, off }) !void {
-    const blpath = "/sys/class/backlight/rpi_backlight/bl_power";
+    const blpath = if (builtin.is_test) "/dev/null" else "/sys/class/backlight/rpi_backlight/bl_power";
     const f = try std.fs.openFileAbsolute(blpath, .{ .mode = .write_only });
     defer f.close();
     const v = if (onoff == .on) "0" else "1";

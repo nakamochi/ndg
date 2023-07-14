@@ -24,6 +24,7 @@ pub const Message = union(MessageTag) {
     wifi_connect: WifiConnect,
     network_report: NetworkReport,
     get_network_report: GetNetworkReport,
+    poweroff_progress: PoweroffProgress,
 
     pub const WifiConnect = struct {
         ssid: []const u8,
@@ -38,6 +39,16 @@ pub const Message = union(MessageTag) {
 
     pub const GetNetworkReport = struct {
         scan: bool, // true starts a wifi scan and send NetworkReport only after completion
+    };
+
+    pub const PoweroffProgress = struct {
+        services: []const Service,
+
+        pub const Service = struct {
+            name: []const u8,
+            stopped: bool,
+            err: ?[]const u8,
+        };
     };
 };
 
@@ -54,7 +65,9 @@ pub const MessageTag = enum(u16) {
     standby = 0x07,
     // ngui -> nd: resume screen due to user touch; no reply
     wakeup = 0x08,
-    // next: 0x09
+    // nd -> ngui: reports poweroff progress
+    poweroff_progress = 0x09,
+    // next: 0x0a
 };
 
 /// reads and parses a single message from the input stream reader.
@@ -92,6 +105,9 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !Message {
         .get_network_report => Message{
             .get_network_report = try json.parse(Message.GetNetworkReport, &jstream, jopt),
         },
+        .poweroff_progress => Message{
+            .poweroff_progress = try json.parse(Message.PoweroffProgress, &jstream, jopt),
+        },
     };
 }
 
@@ -106,6 +122,7 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
         .wifi_connect => try json.stringify(msg.wifi_connect, jopt, data.writer()),
         .network_report => try json.stringify(msg.network_report, jopt, data.writer()),
         .get_network_report => try json.stringify(msg.get_network_report, jopt, data.writer()),
+        .poweroff_progress => try json.stringify(msg.poweroff_progress, jopt, data.writer()),
     }
     if (data.items.len > std.math.maxInt(u64)) {
         return Error.CommWriteTooLarge;
@@ -124,6 +141,22 @@ pub fn free(allocator: mem.Allocator, m: Message) void {
         },
     }
 }
+
+// TODO: use fifo
+//
+//    var buf = std.fifo.LinearFifo(u8, .Dynamic).init(t.allocator);
+//    defer buf.deinit();
+//    const w = buf.writer();
+//    const r = buf.reader();
+//    try w.writeAll("hello there");
+//
+//    var b: [100]u8 = undefined;
+//    var n = try r.readAll(&b);
+//    try t.expectEqualStrings("hello there", b[0..n]);
+//
+//    try w.writeAll("once more");
+//    n = try r.readAll(&b);
+//    try t.expectEqualStrings("once more2", b[0..n]);
 
 test "read" {
     const t = std.testing;
