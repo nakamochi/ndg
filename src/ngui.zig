@@ -1,5 +1,6 @@
 const buildopts = @import("build_options");
 const std = @import("std");
+const os = std.os;
 const time = std.time;
 
 const comm = @import("comm.zig");
@@ -22,25 +23,26 @@ const logger = std.log.scoped(.ngui);
 
 extern "c" fn ui_update_network_status(text: [*:0]const u8, wifi_list: ?[*:0]const u8) void;
 
-/// global heap allocator used throughout the gui program.
+/// global heap allocator used throughout the GUI program.
 /// TODO: thread-safety?
 var gpa: std.mem.Allocator = undefined;
 
 /// the mutex must be held before any call reaching into lv_xxx functions.
 /// all nm_xxx functions assume it is the case since they are invoked from lvgl c code.
 var ui_mutex: std.Thread.Mutex = .{};
+
 /// the program runs until quit is true.
-var quit: bool = false;
+/// set from sighandler or on unrecoverable comm failure with the daemon.
+var want_quit: bool = false;
+
 var state: enum {
     active, // normal operational mode
     standby, // idling
     alert, // draw user attention; never go standby
 } = .active;
 
-/// setting wakeup brings the screen back from sleep()'ing without waiting
-/// for user action.
-/// can be used by comms when an alert is received from the daemon, to draw
-/// user attention.
+/// by setting wakeup brings the screen back from sleep()'ing without waiting for user action.
+/// can be used by comms when an alert is received from the daemon, to draw user attention.
 /// safe for concurrent use except wakeup.reset() is UB during another thread
 /// wakeup.wait()'ing or timedWait'ing.
 var wakeup = std.Thread.ResetEvent{};
@@ -68,12 +70,13 @@ export fn nm_check_idle_time(_: *lvgl.LvTimer) void {
     }
 }
 
-/// initiate system shutdown leading to power off.
+/// tells the daemon to initiate system shutdown leading to power off.
+/// once all's done, the daemon will send a SIGTERM back to ngui.
 export fn nm_sys_shutdown() void {
-    logger.info("initiating system shutdown", .{});
     const msg = comm.Message.poweroff;
     comm.write(gpa, stdout, msg) catch |err| logger.err("nm_sys_shutdown: {any}", .{err});
-    quit = true;
+    state = .alert; // prevent screen sleep
+    wakeup.set(); // wake up from standby, if any
 }
 
 export fn nm_tab_settings_active() void {
@@ -144,17 +147,16 @@ fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
     }
 }
 
-/// reads messages from nd; loops indefinitely until program exit
-fn commThread() void {
+/// reads messages from nd.
+/// loops indefinitely until program exit or comm returns EOS.
+fn commThreadLoop() void {
     while (true) {
         commThreadLoopCycle() catch |err| logger.err("commThreadLoopCycle: {any}", .{err});
-        ui_mutex.lock();
-        const do_quit = quit;
-        ui_mutex.unlock();
-        if (do_quit) {
-            return;
-        }
+
+        std.atomic.spinLoopHint();
+        time.sleep(1 * time.ns_per_ms);
     }
+    logger.info("exiting commThreadLoop", .{});
 }
 
 fn commThreadLoopCycle() !void {
@@ -162,8 +164,9 @@ fn commThreadLoopCycle() !void {
         if (err == error.EndOfStream) {
             // pointless to continue running if comms is broken.
             // a parent/supervisor is expected to restart ngui.
+            logger.err("comm.read: EOS", .{});
             ui_mutex.lock();
-            quit = true;
+            want_quit = true;
             ui_mutex.unlock();
         }
         return err;
@@ -174,6 +177,11 @@ fn commThreadLoopCycle() !void {
         .ping => try comm.write(gpa, stdout, comm.Message.pong),
         .network_report => |report| {
             updateNetworkStatus(report) catch |err| logger.err("updateNetworkStatus: {any}", .{err});
+        },
+        .poweroff_progress => |report| {
+            ui_mutex.lock();
+            defer ui_mutex.unlock();
+            ui.poweroff.updateStatus(report) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
         },
         else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
     }
@@ -218,6 +226,20 @@ fn usage(prog: []const u8) !void {
     , .{prog});
 }
 
+/// handles sig TERM and INT: makes the program exit.
+///
+/// note: must avoid locking ui_mutex within the handler since it may lead to
+/// a race and a deadlock where the sighandler is invoked while the mutex is held
+/// by the UI loop because a sighandler invocation interrupts main execution flow,
+/// and so the mutex would then remain locked indefinitely.
+fn sighandler(sig: c_int) callconv(.C) void {
+    logger.info("received signal {}", .{sig});
+    switch (sig) {
+        os.SIG.INT, os.SIG.TERM => want_quit = true,
+        else => {},
+    }
+}
+
 /// nakamochi UI program entry point.
 pub fn main() anyerror!void {
     // main heap allocator used through the lifetime of nd
@@ -240,8 +262,16 @@ pub fn main() anyerror!void {
     };
 
     // start comms with daemon in a seaparate thread.
-    const th = try std.Thread.spawn(.{}, commThread, .{});
-    th.detach();
+    _ = try std.Thread.spawn(.{}, commThreadLoop, .{});
+
+    // set up a sigterm handler for clean exit.
+    const sa = os.Sigaction{
+        .handler = .{ .handler = sighandler },
+        .mask = os.empty_sigset,
+        .flags = 0,
+    };
+    try os.sigaction(os.SIG.INT, &sa, null);
+    try os.sigaction(os.SIG.TERM, &sa, null);
 
     // run idle timer indefinitely
     _ = lvgl.createTimer(nm_check_idle_time, 2000, null) catch |err| {
@@ -249,16 +279,12 @@ pub fn main() anyerror!void {
     };
 
     // main UI thread; must never block unless in idle/sleep mode
-    // TODO: handle sigterm
-    while (true) {
+    while (!want_quit) {
         ui_mutex.lock();
-        var till_next_ms = lvgl.loopCycle();
-        const do_quit = quit;
+        var till_next_ms = lvgl.loopCycle(); // UI loop
         const do_state = state;
         ui_mutex.unlock();
-        if (do_quit) {
-            return;
-        }
+
         if (do_state == .standby) {
             // go into a screen sleep mode due to no user activity
             wakeup.reset();
@@ -266,6 +292,7 @@ pub fn main() anyerror!void {
                 logger.err("comm.write standby: {any}", .{err});
             };
             screen.sleep(&wakeup);
+
             // wake up due to touch screen activity or wakeup event is set
             logger.info("waking up from sleep", .{});
             ui_mutex.lock();
@@ -279,10 +306,14 @@ pub fn main() anyerror!void {
             ui_mutex.unlock();
             continue;
         }
+
         std.atomic.spinLoopHint();
-        // sleep at least 1ms
-        time.sleep(@max(1, till_next_ms) * time.ns_per_ms);
+        time.sleep(@max(1, till_next_ms) * time.ns_per_ms); // sleep at least 1ms
     }
+    logger.info("main UI loop terminated", .{});
+
+    // not waiting for comm thread because it is terminated at program exit here
+    // anyway.
 }
 
 test "tick" {

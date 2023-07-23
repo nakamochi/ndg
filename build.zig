@@ -104,7 +104,7 @@ pub fn build(b: *std.build.Builder) void {
     nd_build_step.dependOn(&b.addInstallArtifact(nd).step);
 
     // default build
-    const build_all_step = b.step("all", "build everything");
+    const build_all_step = b.step("all", "build nd and ngui");
     build_all_step.dependOn(ngui_build_step);
     build_all_step.dependOn(nd_build_step);
     b.default_step.dependOn(build_all_step);
@@ -122,6 +122,18 @@ pub fn build(b: *std.build.Builder) void {
 
         const test_step = b.step("test", "run tests");
         test_step.dependOn(&tests.step);
+    }
+
+    {
+        const guiplay = b.addExecutable("guiplay", "src/test/guiplay.zig");
+        guiplay.setTarget(target);
+        guiplay.setBuildMode(mode);
+        guiplay.step.dependOn(semver_step);
+        guiplay.addPackagePath("comm", "src/comm.zig");
+
+        const guiplay_build_step = b.step("guiplay", "build GUI playground");
+        guiplay_build_step.dependOn(&b.addInstallArtifact(guiplay).step);
+        guiplay_build_step.dependOn(ngui_build_step);
     }
 }
 

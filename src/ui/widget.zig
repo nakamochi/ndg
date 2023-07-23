@@ -58,7 +58,7 @@ pub fn modal(title: [*:0]const u8, text: [*:0]const u8, btns: []const [*:0]const
     const wincont = win.content();
     wincont.flexFlow(.column);
     wincont.flexAlign(.start, .center, .center);
-    const msg = try lvgl.createLabel(wincont, text, .{ .long_mode = .wrap, .pos = .centered });
+    const msg = try lvgl.createLabel(wincont, text, .{ .pos = .center });
     msg.setWidth(lvgl.displayHoriz() - 100);
     msg.flexGrow(1);
 

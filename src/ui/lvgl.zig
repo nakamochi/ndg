@@ -329,10 +329,15 @@ pub inline fn paletteDarken(p: Palette, l: PaletteModLevel) Color {
 
 /// represents lv_obj_t type in C.
 pub const LvObj = opaque {
-    /// deallocates all the resources used by the object, including its children.
+    /// deallocates all resources used by the object, including its children.
     /// user data pointers are untouched.
     pub fn destroy(self: *LvObj) void {
         lv_obj_del(self);
+    }
+
+    /// deallocates all resources used by the object's children.
+    pub fn deleteChildren(self: *LvObj) void {
+        lv_obj_clean(self);
     }
 
     /// creates a new event handler where cb is called upon event with the filter code.
@@ -341,6 +346,11 @@ pub const LvObj = opaque {
     /// the user data pointer udata is available in a handler using LvEvent.userdata fn.
     pub fn on(self: *LvObj, filter: EventCode, cb: LvEventCallback, udata: ?*anyopaque) *LvEventDescr {
         return lv_obj_add_event_cb(self, cb, filter, udata);
+    }
+
+    /// sets label text to a new value.
+    pub fn setLabelText(self: *LvObj, text: [*:0]const u8) void {
+        lv_label_set_text(self, text);
     }
 
     /// sets or clears an object flag.
@@ -388,11 +398,18 @@ pub const LvObj = opaque {
     }
 
     /// selects which side to pad in setPad func.
-    pub const PadSelector = enum { left, right, top, bottom, row, column };
+    pub const PadSelector = enum { all, left, right, top, bottom, row, column };
 
     /// adds a padding style to the object.
     pub fn setPad(self: *LvObj, v: Coord, p: PadSelector, sel: StyleSelector) void {
         switch (p) {
+            .all => {
+                const vsel = sel.value();
+                lv_obj_set_style_pad_left(self, v, vsel);
+                lv_obj_set_style_pad_right(self, v, vsel);
+                lv_obj_set_style_pad_top(self, v, vsel);
+                lv_obj_set_style_pad_bottom(self, v, vsel);
+            },
             .left => lv_obj_set_style_pad_left(self, v, sel.value()),
             .right => lv_obj_set_style_pad_right(self, v, sel.value()),
             .top => lv_obj_set_style_pad_top(self, v, sel.value()),
@@ -452,6 +469,11 @@ pub const LvObj = opaque {
     /// sets a desired background color to objects parts/states.
     pub fn setBackgroundColor(self: *LvObj, v: Color, sel: StyleSelector) void {
         lv_obj_set_style_bg_color(self, v, sel.value());
+    }
+
+    /// sets the color of a text, typically a label object.
+    pub fn setTextColor(self: *LvObj, v: Color, sel: StyleSelector) void {
+        lv_obj_set_style_text_color(self, v, sel.value());
     }
 };
 
@@ -631,7 +653,7 @@ pub fn createWindow(parent: ?*LvObj, header_height: i16, title: [*:0]const u8) !
     return .{ .winobj = winobj };
 }
 
-const Window = struct {
+pub const Window = struct {
     winobj: *LvObj,
 
     pub fn content(self: Window) *LvObj {
@@ -640,36 +662,56 @@ const Window = struct {
 };
 
 pub const CreateLabelOpt = struct {
-    long_mode: enum(c.lv_label_long_mode_t) {
+    // LVGL defaults to .wrap
+    long_mode: ?enum(c.lv_label_long_mode_t) {
         wrap = c.LV_LABEL_LONG_WRAP, // keep the object width, wrap the too long lines and expand the object height
         dot = c.LV_LABEL_LONG_DOT, // keep the size and write dots at the end if the text is too long
         scroll = c.LV_LABEL_LONG_SCROLL, // keep the size and roll the text back and forth
         scroll_circular = c.LV_LABEL_LONG_SCROLL_CIRCULAR, // keep the size and roll the text circularly
         clip = c.LV_LABEL_LONG_CLIP, // keep the size and clip the text out of it
-    },
-    pos: enum {
-        none,
-        centered,
-    },
+    } = null,
+    pos: ?PosAlign = null,
 };
 
+/// creates a new label object.
+/// the text is heap-duplicated for the lifetime of the object and free'ed automatically.
 pub fn createLabel(parent: *LvObj, text: [*:0]const u8, opt: CreateLabelOpt) !*LvObj {
     var lb = lv_label_create(parent) orelse return error.OutOfMemory;
     //lv_label_set_text_static(lb, text); // static doesn't work with .dot
     lv_label_set_text(lb, text);
     lv_label_set_recolor(lb, true);
     //lv_obj_set_height(lb, sizeContent); // default
-    lv_label_set_long_mode(lb, @enumToInt(opt.long_mode));
-    if (opt.pos == .centered) {
-        lb.center();
+    if (opt.long_mode) |m| {
+        lv_label_set_long_mode(lb, @enumToInt(m));
+    }
+    if (opt.pos) |p| {
+        lb.posAlign(p, 0, 0);
     }
     return lb;
 }
 
+/// formats label text using std.fmt.format and the provided buffer.
+/// a label object is then created with the resulting text using createLabel.
+/// the text is heap-dup'ed so no need to retain buf. see createLabel.
+pub fn createLabelFmt(parent: *LvObj, buf: []u8, comptime format: []const u8, args: anytype, opt: CreateLabelOpt) !*LvObj {
+    const text = try std.fmt.bufPrintZ(buf, format, args);
+    return createLabel(parent, text, opt);
+}
+
 pub fn createButton(parent: *LvObj, label: [*:0]const u8) !*LvObj {
     const btn = lv_btn_create(parent) orelse return error.OutOfMemory;
-    _ = try createLabel(btn, label, .{ .long_mode = .dot, .pos = .centered });
+    _ = try createLabel(btn, label, .{ .long_mode = .dot, .pos = .center });
     return btn;
+}
+
+/// creates a spinner object with hardcoded dimensions and animation speed
+/// used througout the GUI.
+pub fn createSpinner(parent: *LvObj) !*LvObj {
+    const spin = lv_spinner_create(parent, 1000, 60) orelse return error.OutOfMemory;
+    lv_obj_set_size(spin, 20, 20);
+    const ind: StyleSelector = .{ .part = .indicator };
+    lv_obj_set_style_arc_width(spin, 4, ind.value());
+    return spin;
 }
 
 // ==========================================================================
@@ -748,12 +790,14 @@ extern fn lv_obj_add_style(obj: *LvObj, style: *LvStyle, sel: c.lv_style_selecto
 extern fn lv_obj_remove_style(obj: *LvObj, style: ?*LvStyle, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_remove_style_all(obj: *LvObj) void;
 extern fn lv_obj_set_style_bg_color(obj: *LvObj, val: Color, sel: c.lv_style_selector_t) void;
+extern fn lv_obj_set_style_text_color(obj: *LvObj, val: Color, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_set_style_pad_left(obj: *LvObj, val: c.lv_coord_t, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_set_style_pad_right(obj: *LvObj, val: c.lv_coord_t, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_set_style_pad_top(obj: *LvObj, val: c.lv_coord_t, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_set_style_pad_bottom(obj: *LvObj, val: c.lv_coord_t, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_set_style_pad_row(obj: *LvObj, val: c.lv_coord_t, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_set_style_pad_column(obj: *LvObj, val: c.lv_coord_t, sel: c.lv_style_selector_t) void;
+extern fn lv_obj_set_style_arc_width(obj: *LvObj, val: c.lv_coord_t, sel: c.lv_style_selector_t) void;
 
 // TODO: port these to zig
 extern fn lv_palette_main(c.lv_palette_t) Color;
@@ -766,6 +810,8 @@ extern fn lv_palette_darken(c.lv_palette_t, level: u8) Color;
 extern fn lv_obj_create(parent: ?*LvObj) ?*LvObj;
 /// deletes and deallocates an object and all its children from UI tree.
 extern fn lv_obj_del(obj: *LvObj) void;
+/// deletes children of the obj.
+extern fn lv_obj_clean(obj: *LvObj) void;
 
 extern fn lv_obj_add_flag(obj: *LvObj, v: c.lv_obj_flag_t) void;
 extern fn lv_obj_clear_flag(obj: *LvObj, v: c.lv_obj_flag_t) void;
@@ -793,6 +839,8 @@ extern fn lv_label_set_text(label: *LvObj, text: [*:0]const u8) void;
 extern fn lv_label_set_text_static(label: *LvObj, text: [*:0]const u8) void;
 extern fn lv_label_set_long_mode(label: *LvObj, mode: c.lv_label_long_mode_t) void;
 extern fn lv_label_set_recolor(label: *LvObj, enable: bool) void;
+
+extern fn lv_spinner_create(parent: *LvObj, speed_ms: u32, arc_deg: u32) ?*LvObj;
 
 extern fn lv_win_create(parent: *LvObj, header_height: c.lv_coord_t) ?*LvObj;
 extern fn lv_win_add_title(win: *LvObj, title: [*:0]const u8) ?*LvObj;
