@@ -299,10 +299,9 @@ const LVGLLogLevel = enum {
     none,
 
     /// returns default mode based on the compiler optimization flags.
-    /// similar to std.log.default_level.
     fn default(mode: std.builtin.Mode) @This() {
         return switch (mode) {
-            .Debug => .info,
+            .Debug => .warn,
             .ReleaseSafe => .warn,
             .ReleaseFast, .ReleaseSmall => .err,
         };
