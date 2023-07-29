@@ -50,10 +50,12 @@ pub const ModalButtonCallbackFn = *const fn (index: usize) void;
 /// while all heap-alloc'ed resources are free'd automatically right before cb is called,
 /// the value of title, text and btns args must live at least as long as cb; they are
 /// memory-managed by the callers.
+///
+/// note: the cb callback must have @alignOf(ModalbuttonCallbackFn) alignment.
 pub fn modal(title: [*:0]const u8, text: [*:0]const u8, btns: []const [*:0]const u8, cb: ModalButtonCallbackFn) !void {
     const win = try lvgl.createWindow(null, 60, title);
     errdefer win.winobj.destroy(); // also deletes all children created below
-    win.winobj.setUserdata(@ptrCast(?*const anyopaque, cb));
+    win.winobj.setUserdata(cb);
 
     const wincont = win.content();
     wincont.flexFlow(.column);

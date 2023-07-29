@@ -31,7 +31,7 @@ export fn nm_poweroff_btn_callback(_: *lvgl.LvEvent) void {
 }
 
 /// poweroff confirmation screen callback.
-fn poweroffModalCallback(btn_idx: usize) void {
+fn poweroffModalCallback(btn_idx: usize) align(@alignOf(widget.ModalButtonCallbackFn)) void {
     // proceed = 0, cancel = 1
     if (btn_idx != 0) {
         return;
