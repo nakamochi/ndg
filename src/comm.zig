@@ -1,11 +1,13 @@
-///! daemon/gui communication.
-///! the protocol is a simple TLV construct: MessageTag(u16), length(u64), json-marshalled Message;
-///! little endian.
+//! daemon/gui communication.
+//! the protocol is a simple TLV construct: MessageTag(u16), length(u64), json-marshalled Message;
+//! little endian.
 const std = @import("std");
 const json = std.json;
 const mem = std.mem;
 
 const ByteArrayList = @import("types.zig").ByteArrayList;
+
+const logger = std.log.scoped(.comm);
 
 /// common errors returned by read/write functions.
 pub const Error = error{
@@ -71,12 +73,13 @@ pub const MessageTag = enum(u16) {
 };
 
 /// reads and parses a single message from the input stream reader.
-/// callers must deallocate resources with free when done.
+/// propagates reader errors as is. for example, a closed reader returns
+/// error.EndOfStream.
+///
+/// callers must deallocate resources with Message.free when done.
 pub fn read(allocator: mem.Allocator, reader: anytype) !Message {
     // alternative is @intToEnum(reader.ReadIntLittle(u16)) but it may panic.
-    const tag = reader.readEnum(MessageTag, .Little) catch {
-        return Error.CommReadInvalidTag;
-    };
+    const tag = try reader.readEnum(MessageTag, .Little);
     const len = try reader.readIntLittle(u64);
     if (len == 0) {
         return switch (tag) {

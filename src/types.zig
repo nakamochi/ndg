@@ -47,3 +47,35 @@ pub const IoPipe = struct {
         return self.w.writer();
     }
 };
+
+// TODO: turns this into a UniqStringList backed by StringArrayHashMap; also see std.BufSet
+pub const StringList = struct {
+    l: std.ArrayList([]const u8),
+    allocator: std.mem.Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return Self{
+            .l = std.ArrayList([]const u8).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        for (self.l.items) |a| {
+            self.allocator.free(a);
+        }
+        self.l.deinit();
+    }
+
+    pub fn append(self: *Self, s: []const u8) !void {
+        const item = try self.allocator.dupe(u8, s);
+        errdefer self.allocator.free(item);
+        try self.l.append(item);
+    }
+
+    pub fn items(self: Self) []const []const u8 {
+        return self.l.items;
+    }
+};

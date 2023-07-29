@@ -28,21 +28,11 @@ fn usage(prog: []const u8) !void {
     , .{prog});
 }
 
-/// prints messages in the same way std.fmt.format does and exits the process
-/// with a non-zero code.
-fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
-    stderr.print(fmt, args) catch {};
-    if (fmt[fmt.len - 1] != '\n') {
-        stderr.writeByte('\n') catch {};
-    }
-    std.process.exit(1);
-}
-
-/// nd program args. see usage.
+/// nd program flags. see usage.
 const NdArgs = struct {
-    gui: ?[:0]const u8 = null, // = "ngui",
-    gui_user: ?[:0]const u8 = null, // u8 = "uiuser",
-    wpa: ?[:0]const u8 = null, // = "/var/run/wpa_supplicant/wlan0",
+    gui: ?[:0]const u8 = null,
+    gui_user: ?[:0]const u8 = null,
+    wpa: ?[:0]const u8 = null,
 
     fn deinit(self: @This(), allocator: std.mem.Allocator) void {
         if (self.gui) |p| allocator.free(p);
@@ -97,29 +87,38 @@ fn parseArgs(gpa: std.mem.Allocator) !NdArgs {
         } else if (std.mem.eql(u8, a, "-wpa")) {
             lastarg = .wpa;
         } else {
-            fatal("unknown arg name {s}", .{a});
+            logger.err("unknown arg name {s}", .{a});
+            return error.UnknownArgName;
         }
     }
 
     if (lastarg != .none) {
-        fatal("invalid arg: {s} requires a value", .{@tagName(lastarg)});
+        logger.err("invalid arg: {s} requires a value", .{@tagName(lastarg)});
+        return error.MissinArgValue;
     }
-    if (flags.gui == null) fatal("missing -gui arg", .{});
-    if (flags.gui_user == null) fatal("missing -gui-user arg", .{});
-    if (flags.wpa == null) fatal("missing -wpa arg", .{});
+    if (flags.gui == null) {
+        logger.err("missing -gui arg", .{});
+        return error.MissingGuiFlag;
+    }
+    if (flags.gui_user == null) {
+        logger.err("missing -gui-user arg", .{});
+        return error.MissinGuiUserFlag;
+    }
+    if (flags.wpa == null) {
+        logger.err("missing -wpa arg", .{});
+        return error.MissingWpaFlag;
+    }
 
     return flags;
 }
 
-/// sigquit signals nd main loop to exit.
-/// since both the loop and sighandler are on the same thread, it must
-/// not be guarded by a mutex which otherwise leads to a dealock.
-var sigquit = false;
+/// sigquit tells nd to exit.
+var sigquit: std.Thread.ResetEvent = .{};
 
 fn sighandler(sig: c_int) callconv(.C) void {
     logger.info("received signal {}", .{sig});
     switch (sig) {
-        os.SIG.INT, os.SIG.TERM => sigquit = true,
+        os.SIG.INT, os.SIG.TERM => sigquit.set(),
         else => {},
     }
 }
@@ -141,7 +140,8 @@ pub fn main() !void {
     screen.backlight(.on) catch |err| logger.err("backlight: {any}", .{err});
 
     // start ngui, unless -nogui mode
-    var ngui = std.ChildProcess.init(&.{args.gui.?}, gpa);
+    const gui_path = args.gui.?; // guaranteed to be non-null
+    var ngui = std.ChildProcess.init(&.{gui_path}, gpa);
     ngui.stdin_behavior = .Pipe;
     ngui.stdout_behavior = .Pipe;
     ngui.stderr_behavior = .Inherit;
@@ -158,16 +158,28 @@ pub fn main() !void {
     //ngui.uid = uiuser.uid;
     //ngui.gid = uiuser.gid;
     // ngui.env_map = ...
-    ngui.spawn() catch |err| fatal("unable to start ngui: {any}", .{err});
+    ngui.spawn() catch |err| {
+        logger.err("unable to start ngui at path {s}", .{gui_path});
+        return err;
+    };
+    // if the daemon fails to start and its process exits, ngui may hang forever
+    // preventing system services monitoring to detect a failure and restart nd.
+    // so, make sure to kill the ngui child process on fatal failures.
+    errdefer _ = ngui.kill() catch {};
 
-    // TODO: thread-safety, esp. uiwriter
+    // the i/o is closed as soon as ngui child process terminates.
+    // note: read(2) indicates file destriptor i/o is atomic linux since 3.14.
     const uireader = ngui.stdout.?.reader();
     const uiwriter = ngui.stdin.?.writer();
-    // send UI a ping as the first thing to make sure pipes are working.
-    // https://git.qcode.ch/nakamochi/ndg/issues/16
+    // send UI a ping right away to make sure pipes are working, crash otherwise.
     comm.write(gpa, uiwriter, .ping) catch |err| {
         logger.err("comm.write ping: {any}", .{err});
+        return err;
     };
+
+    var nd = try Daemon.init(gpa, uireader, uiwriter, args.wpa.?);
+    defer nd.deinit();
+    try nd.start();
 
     // graceful shutdown; see sigaction(2)
     const sa = os.Sigaction{
@@ -177,71 +189,13 @@ pub fn main() !void {
     };
     try os.sigaction(os.SIG.INT, &sa, null);
     try os.sigaction(os.SIG.TERM, &sa, null);
+    sigquit.wait();
 
-    var nd = try Daemon.init(gpa, uiwriter, args.wpa.?);
-    defer nd.deinit();
-    try nd.start();
-    // send the UI network report right away, without scanning wifi
-    nd.reportNetworkStatus(.{ .scan = false });
-
-    var poweroff = false;
-    // ngui -> nd comm loop; run until exit is requested
-    // TODO: move this loop to Daemon.zig? but what about quit and keep ngui running
-    while (!sigquit) {
-        time.sleep(100 * time.ns_per_ms);
-        if (poweroff) {
-            // GUI is not expected to send anything back at this point,
-            // so just loop until we're terminated by a SIGTERM (sigquit).
-            continue;
-        }
-
-        // note: uireader.read is blocking
-        // TODO: handle error.EndOfStream - ngui exited
-        const msg = comm.read(gpa, uireader) catch |err| {
-            logger.err("comm.read: {any}", .{err});
-            continue;
-        };
-        logger.debug("got ui msg tagged {s}", .{@tagName(msg)});
-        switch (msg) {
-            .pong => {
-                logger.info("received pong from ngui", .{});
-            },
-            .poweroff => {
-                poweroff = true;
-                nd.beginPoweroff() catch |err| {
-                    logger.err("beginPoweroff: {any}", .{err});
-                    poweroff = false;
-                };
-            },
-            .get_network_report => |req| {
-                nd.reportNetworkStatus(.{ .scan = req.scan });
-            },
-            .wifi_connect => |req| {
-                nd.startConnectWifi(req.ssid, req.password) catch |err| {
-                    logger.err("startConnectWifi: {any}", .{err});
-                };
-            },
-            .standby => {
-                logger.info("entering standby mode", .{});
-                nd.standby() catch |err| {
-                    logger.err("nd.standby: {any}", .{err});
-                };
-            },
-            .wakeup => {
-                logger.info("wakeup from standby", .{});
-                nd.wakeup() catch |err| {
-                    logger.err("nd.wakeup: {any}", .{err});
-                };
-            },
-            else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
-        }
-        comm.free(gpa, msg);
-    }
-
-    // reached here due to sig TERM or INT;
-    // note: poweroff does not terminate the loop and instead initiates
-    // a system shutdown which in turn should terminate this process via a SIGTERM.
-    // so, there's no difference whether we're exiting due to poweroff of a SIGTERM here.
-    _ = ngui.kill() catch |err| logger.err("ngui.kill: {any}", .{err});
+    // reached here due to sig TERM or INT.
+    // tell deamon to terminate threads.
     nd.stop();
+    // once ngui exits, it'll close uireader/writer i/o from child proc
+    // which lets the daemon's wait() to return.
+    _ = ngui.kill() catch |err| logger.err("ngui.kill: {any}", .{err});
+    nd.wait();
 }

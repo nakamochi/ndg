@@ -1,30 +1,30 @@
 //! daemon watches network status and communicates updates to the GUI using uiwriter.
-//! public fields are allocator
 //! usage example:
 //!
-//!     var ctrl = try nif.wpa.Control.open("/run/wpa_supplicant/wlan0");
-//!     defer ctrl.close() catch {};
-//!     var nd: Daemon = .{
-//!         .allocator = gpa,
-//!         .uiwriter = ngui_stdio_writer,
-//!         .wpa_ctrl = ctrl,
-//!     };
+//!     var nd = Daemon.init(gpa, ngui_io_reader, ngui_io_writer, "/run/wpa_suppl/wlan0");
+//!     defer nd.deinit();
 //!     try nd.start();
+//!     // wait for sigterm...
+//!     nd.stop();
+//!     // terminate ngui proc...
+//!     nd.wait();
+//!
 
+const builtin = @import("builtin");
 const std = @import("std");
 const mem = std.mem;
 const time = std.time;
 
-const nif = @import("nif");
-
 const comm = @import("../comm.zig");
+const network = @import("network.zig");
 const screen = @import("../ui/screen.zig");
 const types = @import("../types.zig");
 const SysService = @import("SysService.zig");
 
-const logger = std.log.scoped(.netmon);
+const logger = std.log.scoped(.daemon);
 
 allocator: mem.Allocator,
+uireader: std.fs.File.Reader, // ngui stdout
 uiwriter: std.fs.File.Writer, // ngui stdin
 wpa_ctrl: types.WpaControl, // guarded by mu once start'ed
 
@@ -35,17 +35,20 @@ mu: std.Thread.Mutex = .{},
 state: enum {
     stopped,
     running,
+    standby,
     poweroff,
 },
 
 main_thread: ?std.Thread = null,
+comm_thread: ?std.Thread = null,
 poweroff_thread: ?std.Thread = null,
 
 want_stop: bool = false, // tells daemon main loop to quit
-want_network_report: bool = false,
-want_wifi_scan: bool = false,
+// network flags
+want_network_report: bool, // start gathering network status and send out as soon as ready
+want_wifi_scan: bool, // initiate wifi scan at the next loop cycle
+network_report_ready: bool, // indicates whether the network status is ready to be sent
 wifi_scan_in_progress: bool = false,
-network_report_ready: bool = true, // no need to scan for an immediate report
 wpa_save_config_on_connected: bool = false,
 
 /// system services actively managed by the daemon.
@@ -55,8 +58,10 @@ services: []SysService = &.{},
 
 const Daemon = @This();
 
+/// initializes a daemon instance using the provided GUI stdout reader and stdin writer,
+/// and a filesystem path to WPA control socket.
 /// callers must deinit when done.
-pub fn init(a: std.mem.Allocator, iogui: std.fs.File.Writer, wpa_path: [:0]const u8) !Daemon {
+pub fn init(a: std.mem.Allocator, r: std.fs.File.Reader, w: std.fs.File.Writer, wpa: [:0]const u8) !Daemon {
     var svlist = std.ArrayList(SysService).init(a);
     errdefer {
         for (svlist.items) |*sv| sv.deinit();
@@ -68,24 +73,21 @@ pub fn init(a: std.mem.Allocator, iogui: std.fs.File.Writer, wpa_path: [:0]const
     try svlist.append(SysService.init(a, "bitcoind", .{ .stop_wait_sec = 600 }));
     return .{
         .allocator = a,
-        .uiwriter = iogui,
-        .wpa_ctrl = try types.WpaControl.open(wpa_path),
+        .uireader = r,
+        .uiwriter = w,
+        .wpa_ctrl = try types.WpaControl.open(wpa),
         .state = .stopped,
         .services = svlist.toOwnedSlice(),
+        // send a network report right at start without wifi scan to make it faster.
+        .want_network_report = true,
+        .want_wifi_scan = false,
+        .network_report_ready = true,
     };
 }
 
 /// releases all associated resources.
-/// if the daemon is not in a stopped or poweroff mode, deinit panics.
+/// the daemon must be stop'ed and wait'ed before deiniting.
 pub fn deinit(self: *Daemon) void {
-    self.mu.lock();
-    defer self.mu.unlock();
-    switch (self.state) {
-        .stopped, .poweroff => if (self.want_stop) {
-            @panic("deinit while stopping");
-        },
-        else => @panic("deinit while running"),
-    }
     self.wpa_ctrl.close() catch |err| logger.err("deinit: wpa_ctrl.close: {any}", .{err});
     for (self.services) |*sv| {
         sv.deinit();
@@ -93,40 +95,51 @@ pub fn deinit(self: *Daemon) void {
     self.allocator.free(self.services);
 }
 
-/// start launches a main thread and returns immediately.
-/// once started, the daemon must be eventually stop'ed to clean up resources
-/// even if a poweroff sequence is launched with beginPoweroff. however, in the latter
-/// case the daemon cannot be start'ed again after stop.
+/// start launches daemon threads and returns immediately.
+/// once started, the daemon must be eventually stop'ed and wait'ed to clean up
+/// resources even if a poweroff sequence is initiated with beginPoweroff.
 pub fn start(self: *Daemon) !void {
     self.mu.lock();
     defer self.mu.unlock();
     switch (self.state) {
-        .running => return error.AlreadyStarted,
-        .poweroff => return error.InPoweroffState,
         .stopped => {}, // continue
+        .poweroff => return error.InPoweroffState,
+        else => return error.AlreadyStarted,
     }
 
     try self.wpa_ctrl.attach();
+    errdefer {
+        self.wpa_ctrl.detach() catch {};
+        self.want_stop = true;
+    }
+
     self.main_thread = try std.Thread.spawn(.{}, mainThreadLoop, .{self});
+    self.comm_thread = try std.Thread.spawn(.{}, commThreadLoop, .{self});
     self.state = .running;
 }
 
-/// stop blocks until all daemon threads exit, including poweroff if any.
-/// once stopped, the daemon can be start'ed again unless a poweroff was initiated.
-///
-/// note: stop leaves system services like lnd and bitcoind running.
+/// tells the daemon to stop threads to prepare for termination.
+/// stop returns immediately.
+/// callers must `wait` to release all resources.
 pub fn stop(self: *Daemon) void {
     self.mu.lock();
-    if (self.want_stop or self.state == .stopped) {
-        self.mu.unlock();
-        return; // already in progress or stopped
-    }
+    defer self.mu.unlock();
     self.want_stop = true;
-    self.mu.unlock(); // avoid threads deadlock
+}
 
+/// blocks and waits for all threads to terminate. the daemon instance cannot
+/// be start'ed afterwards.
+///
+/// note that in order for wait to return, the GUI I/O reader provided at init
+/// must be closed.
+pub fn wait(self: *Daemon) void {
     if (self.main_thread) |th| {
         th.join();
         self.main_thread = null;
+    }
+    if (self.comm_thread) |th| {
+        th.join();
+        self.comm_thread = null;
     }
     // must be the last one to join because it sends a final poweroff report.
     if (self.poweroff_thread) |th| {
@@ -134,54 +147,72 @@ pub fn stop(self: *Daemon) void {
         self.poweroff_thread = null;
     }
 
-    self.mu.lock();
-    defer self.mu.unlock();
+    self.wpa_ctrl.detach() catch |err| logger.err("wait: wpa_ctrl.detach: {any}", .{err});
     self.want_stop = false;
-    if (self.state != .poweroff) { // keep poweroff to prevent start'ing again
-        self.state = .stopped;
-    }
-    self.wpa_ctrl.detach() catch |err| logger.err("stop: wpa_ctrl.detach: {any}", .{err});
+    self.state = .stopped;
 }
 
-pub fn standby(self: *Daemon) !void {
+/// tells the daemon to go into a standby mode, typically due to user inactivity.
+fn standby(self: *Daemon) !void {
     self.mu.lock();
     defer self.mu.unlock();
     switch (self.state) {
-        .poweroff => return error.InPoweroffState,
-        .running, .stopped => {}, // continue
+        .standby => {},
+        .stopped, .poweroff => return error.InvalidState,
+        .running => {
+            try screen.backlight(.off);
+            self.state = .standby;
+        },
     }
-    try screen.backlight(.off);
 }
 
-pub fn wakeup(_: *Daemon) !void {
-    try screen.backlight(.on);
+/// tells the daemon to return from standby, typically due to user interaction.
+fn wakeup(self: *Daemon) !void {
+    self.mu.lock();
+    defer self.mu.unlock();
+    switch (self.state) {
+        .running => {},
+        .stopped, .poweroff => return error.InvalidState,
+        .standby => {
+            try screen.backlight(.on);
+            self.state = .running;
+        },
+    }
 }
 
 /// initiates system poweroff sequence in a separate thread: shut down select
 /// system services such as lnd and bitcoind, and issue "poweroff" command.
 ///
-/// in the poweroff mode, the daemon is still running as usual and must be stop'ed.
-/// however, in poweroff mode regular functionalities are disabled, such as
-/// wifi scan and standby.
-pub fn beginPoweroff(self: *Daemon) !void {
+/// beingPoweroff also makes other threads exit but callers must still call `wait`
+/// to make sure poweroff sequence is complete.
+fn beginPoweroff(self: *Daemon) !void {
     self.mu.lock();
     defer self.mu.unlock();
-    if (self.state == .poweroff) {
-        return; // already in poweroff state
+    switch (self.state) {
+        .poweroff => {}, // already in poweroff mode
+        .stopped => return error.InvalidState,
+        .running, .standby => {
+            self.poweroff_thread = try std.Thread.spawn(.{}, poweroffThread, .{self});
+            self.state = .poweroff;
+            self.want_stop = true;
+        },
     }
-
-    self.poweroff_thread = try std.Thread.spawn(.{}, poweroffThread, .{self});
-    self.state = .poweroff;
 }
 
-// stops all monitored services and issue poweroff command while reporting
-// the progress to ngui.
-fn poweroffThread(self: *Daemon) !void {
+/// set when poweroff_thread starts. available in tests only.
+var test_poweroff_started = if (builtin.is_test) std.Thread.ResetEvent{} else {};
+
+/// the poweroff thread entry point: stops all monitored services and issues poweroff
+/// command while reporting the progress to ngui.
+/// exits after issuing "poweroff" command.
+fn poweroffThread(self: *Daemon) void {
+    if (builtin.is_test) {
+        test_poweroff_started.set();
+    }
     logger.info("begin powering off", .{});
     screen.backlight(.on) catch |err| {
         logger.err("screen.backlight(.on) during poweroff: {any}", .{err});
     };
-    self.wpa_ctrl.detach() catch {}; // don't care because powering off anyway
 
     // initiate shutdown of all services concurrently.
     for (self.services) |*sv| {
@@ -202,48 +233,110 @@ fn poweroffThread(self: *Daemon) !void {
     logger.info("poweroff: {any}", .{res});
 }
 
-/// main thread entry point.
-fn mainThreadLoop(self: *Daemon) !void {
+/// main thread entry point: watches for want_xxx flags and monitors network.
+/// exits when want_stop is true.
+fn mainThreadLoop(self: *Daemon) void {
     var quit = false;
     while (!quit) {
         self.mainThreadLoopCycle() catch |err| logger.err("main thread loop: {any}", .{err});
+        std.atomic.spinLoopHint();
         time.sleep(1 * time.ns_per_s);
 
         self.mu.lock();
         quit = self.want_stop;
         self.mu.unlock();
     }
+    logger.info("exiting main thread loop", .{});
 }
 
-/// run one cycle of the main thread loop iteration.
-/// unless in poweroff mode, the cycle holds self.mu for the whole duration.
+/// runs one cycle of the main thread loop iteration.
+/// the cycle holds self.mu for the whole duration.
 fn mainThreadLoopCycle(self: *Daemon) !void {
-    switch (self.state) {
-        // poweroff mode: do nothing; handled by poweroffThread
-        .poweroff => {},
-        // normal state: running or standby
-        else => {
-            self.mu.lock();
-            defer self.mu.unlock();
-            self.readWPACtrlMsg() catch |err| logger.err("readWPACtrlMsg: {any}", .{err});
-            if (self.want_wifi_scan) {
-                if (self.startWifiScan()) {
-                    self.want_wifi_scan = false;
-                } else |err| {
-                    logger.err("startWifiScan: {any}", .{err});
-                }
-            }
-            if (self.want_network_report and self.network_report_ready) {
-                if (self.sendNetworkReport()) {
-                    self.want_network_report = false;
-                } else |err| {
-                    logger.err("sendNetworkReport: {any}", .{err});
-                }
-            }
-        },
+    self.mu.lock();
+    defer self.mu.unlock();
+    self.readWPACtrlMsg() catch |err| logger.err("readWPACtrlMsg: {any}", .{err});
+    if (self.want_wifi_scan) {
+        if (self.startWifiScan()) {
+            self.want_wifi_scan = false;
+        } else |err| {
+            logger.err("startWifiScan: {any}", .{err});
+        }
+    }
+    if (self.want_network_report and self.network_report_ready) {
+        if (network.sendReport(self.allocator, &self.wpa_ctrl, self.uiwriter)) {
+            self.want_network_report = false;
+        } else |err| {
+            logger.err("network.sendReport: {any}", .{err});
+        }
     }
 }
 
+/// comm thread entry point: reads messages sent from ngui and acts accordinly.
+/// exits when want_stop is true or comm reader is closed.
+/// note: the thread might not exit immediately on want_stop because comm.read
+/// is blocking.
+fn commThreadLoop(self: *Daemon) void {
+    var quit = false;
+    loop: while (!quit) {
+        std.atomic.spinLoopHint();
+        time.sleep(100 * time.ns_per_ms);
+
+        const msg = comm.read(self.allocator, self.uireader) catch |err| {
+            self.mu.lock();
+            defer self.mu.unlock();
+            if (self.want_stop) {
+                break :loop; // pipe is most likely already closed
+            }
+            switch (self.state) {
+                .stopped, .poweroff => break :loop,
+                .running, .standby => {
+                    logger.err("commThreadLoop: {any}", .{err});
+                    if (err == error.EndOfStream) {
+                        // pointless to continue running if comms I/O is broken.
+                        self.want_stop = true;
+                        break :loop;
+                    }
+                    continue;
+                },
+            }
+        };
+
+        logger.debug("got msg: {s}", .{@tagName(msg)});
+        switch (msg) {
+            .pong => {
+                logger.info("received pong from ngui", .{});
+            },
+            .poweroff => {
+                self.beginPoweroff() catch |err| logger.err("beginPoweroff: {any}", .{err});
+            },
+            .get_network_report => |req| {
+                self.reportNetworkStatus(.{ .scan = req.scan });
+            },
+            .wifi_connect => |req| {
+                self.startConnectWifi(req.ssid, req.password) catch |err| {
+                    logger.err("startConnectWifi: {any}", .{err});
+                };
+            },
+            .standby => {
+                logger.info("entering standby mode", .{});
+                self.standby() catch |err| logger.err("nd.standby: {any}", .{err});
+            },
+            .wakeup => {
+                logger.info("wakeup from standby", .{});
+                self.wakeup() catch |err| logger.err("nd.wakeup: {any}", .{err});
+            },
+            else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
+        }
+        comm.free(self.allocator, msg);
+
+        self.mu.lock();
+        quit = self.want_stop;
+        self.mu.unlock();
+    }
+    logger.info("exiting comm thread loop", .{});
+}
+
+/// sends poweroff progress to uiwriter in comm.Message.PoweroffProgress format.
 fn sendPoweroffReport(self: *Daemon) !void {
     var svstat = try self.allocator.alloc(comm.Message.PoweroffProgress.Service, self.services.len);
     defer self.allocator.free(svstat);
@@ -289,18 +382,20 @@ fn wifiConnected(self: *Daemon) void {
 }
 
 /// invoked when CTRL-EVENT-SSID-TEMP-DISABLED event with authentication failures is seen.
-/// caller must hold self.mu.
+/// callers must hold self.mu.
 fn wifiInvalidKey(self: *Daemon) void {
     self.wpa_save_config_on_connected = false;
     self.want_network_report = true;
     self.network_report_ready = true;
 }
 
-pub const ReportNetworkStatusOpt = struct {
+const ReportNetworkStatusOpt = struct {
     scan: bool,
 };
 
-pub fn reportNetworkStatus(self: *Daemon, opt: ReportNetworkStatusOpt) void {
+/// tells the daemon to start preparing network status report, including a wifi
+/// scan as an option.
+fn reportNetworkStatus(self: *Daemon, opt: ReportNetworkStatusOpt) void {
     self.mu.lock();
     defer self.mu.unlock();
     self.want_network_report = true;
@@ -310,7 +405,8 @@ pub fn reportNetworkStatus(self: *Daemon, opt: ReportNetworkStatusOpt) void {
     }
 }
 
-pub fn startConnectWifi(self: *Daemon, ssid: []const u8, password: []const u8) !void {
+/// initiates wifi connection procedure in a separate thread
+fn startConnectWifi(self: *Daemon, ssid: []const u8, password: []const u8) !void {
     if (ssid.len == 0) {
         return error.ConnectWifiEmptySSID;
     }
@@ -320,21 +416,24 @@ pub fn startConnectWifi(self: *Daemon, ssid: []const u8, password: []const u8) !
     th.detach();
 }
 
+/// the wifi connection procedure thread entry point.
+/// holds self.mu for the whole duration. however the thread lifetime is expected
+/// to be short since all it does is issuing commands to self.wpa_ctrl.
+///
+/// the thread owns ssid and password args, and frees them at exit.
 fn connectWifiThread(self: *Daemon, ssid: []const u8, password: []const u8) void {
+    self.mu.lock();
     defer {
+        self.mu.unlock();
         self.allocator.free(ssid);
         self.allocator.free(password);
     }
+
     // https://hostap.epitest.fi/wpa_supplicant/devel/ctrl_iface_page.html
     // https://wiki.archlinux.org/title/WPA_supplicant
 
-    // this prevents main thread from looping until released,
-    // but the following commands and expected to be pretty quick.
-    self.mu.lock();
-    defer self.mu.unlock();
-
-    const id = self.addWifiNetwork(ssid, password) catch |err| {
-        logger.err("addWifiNetwork: {any}; exiting", .{err});
+    const id = network.addWifi(self.allocator, &self.wpa_ctrl, ssid, password) catch |err| {
+        logger.err("addWifi: {any}; exiting", .{err});
         return;
     };
     // SELECT_NETWORK <id> - this disables others
@@ -353,51 +452,8 @@ fn connectWifiThread(self: *Daemon, ssid: []const u8, password: []const u8) void
     self.wpa_save_config_on_connected = true;
 }
 
-/// adds a new network and configures its parameters.
-/// caller must hold self.mu.
-fn addWifiNetwork(self: *Daemon, ssid: []const u8, password: []const u8) !u32 {
-    // - ADD_NETWORK -> get id and set parameters
-    // - SET_NETWORK <id> ssid "ssid"
-    // - if password:
-    //   SET_NETWORK <id> psk "password"
-    // else:
-    //   SET_NETWORK <id> key_mgmt NONE
-    const newWifiId = try self.wpa_ctrl.addNetwork();
-    errdefer self.wpa_ctrl.removeNetwork(newWifiId) catch |err| {
-        logger.err("addWifiNetwork cleanup: {any}", .{err});
-    };
-    var buf: [128:0]u8 = undefined;
-    // TODO: convert ssid to hex string, to support special characters
-    const ssidZ = try std.fmt.bufPrintZ(&buf, "\"{s}\"", .{ssid});
-    try self.wpa_ctrl.setNetworkParam(newWifiId, "ssid", ssidZ);
-    if (password.len > 0) {
-        // TODO: switch to wpa_passphrase
-        const v = try std.fmt.bufPrintZ(&buf, "\"{s}\"", .{password});
-        try self.wpa_ctrl.setNetworkParam(newWifiId, "psk", v);
-    } else {
-        try self.wpa_ctrl.setNetworkParam(newWifiId, "key_mgmt", "NONE");
-    }
-
-    // - LIST_NETWORKS: network id / ssid / bssid / flags
-    // - for each matching ssid unless it's newly created: REMOVE_NETWORK <id>
-    if (self.queryWifiNetworksList(.{ .ssid = ssid })) |res| {
-        defer self.allocator.free(res);
-        for (res) |id| {
-            if (id == newWifiId) {
-                continue;
-            }
-            self.wpa_ctrl.removeNetwork(id) catch |err| {
-                logger.err("wpa_ctrl.removeNetwork({}): {any}", .{ id, err });
-            };
-        }
-    } else |err| {
-        logger.err("queryWifiNetworksList({s}): {any}; won't remove existing, if any", .{ ssid, err });
-    }
-
-    return newWifiId;
-}
-
-/// caller must hold self.mu.
+/// reads all available messages from self.wpa_ctrl and acts accordingly.
+/// callers must hold self.mu.
 fn readWPACtrlMsg(self: *Daemon) !void {
     var buf: [512:0]u8 = undefined;
     while (try self.wpa_ctrl.pending()) {
@@ -428,177 +484,31 @@ fn readWPACtrlMsg(self: *Daemon) !void {
     }
 }
 
-/// report network status to ngui.
-/// caller must hold self.mu.
-fn sendNetworkReport(self: *Daemon) !void {
-    var report = comm.Message.NetworkReport{
-        .ipaddrs = undefined,
-        .wifi_ssid = null,
-        .wifi_scan_networks = undefined,
-    };
-
-    // fetch all public IP addresses using getifaddrs
-    const pubaddr = try nif.pubAddresses(self.allocator, null);
-    defer self.allocator.free(pubaddr);
-    //var addrs = std.ArrayList([]).init(t.allocator);
-    var ipaddrs = try self.allocator.alloc([]const u8, pubaddr.len);
-    for (pubaddr) |a, i| {
-        ipaddrs[i] = try std.fmt.allocPrint(self.allocator, "{s}", .{a});
-    }
-    defer {
-        for (ipaddrs) |a| self.allocator.free(a);
-        self.allocator.free(ipaddrs);
-    }
-    report.ipaddrs = ipaddrs;
-
-    // get currently connected SSID, if any, from WPA ctrl
-    const ssid = self.queryWifiSSID() catch |err| blk: {
-        logger.err("queryWifiSsid: {any}", .{err});
-        break :blk null;
-    };
-    defer if (ssid) |v| self.allocator.free(v);
-    report.wifi_ssid = ssid;
-
-    // fetch available wifi networks from scan results using WPA ctrl
-    var wifi_networks: ?StringList = if (self.queryWifiScanResults()) |v| v else |err| blk: {
-        logger.err("queryWifiScanResults: {any}", .{err});
-        break :blk null;
-    };
-    defer if (wifi_networks) |*list| list.deinit();
-    if (wifi_networks) |list| {
-        report.wifi_scan_networks = list.items();
-    }
-
-    // report everything back to ngui
-    return comm.write(self.allocator, self.uiwriter, comm.Message{ .network_report = report });
-}
-
-/// caller must hold self.mu.
-fn queryWifiSSID(self: *Daemon) !?[]const u8 {
-    var buf: [512:0]u8 = undefined;
-    const resp = try self.wpa_ctrl.request("STATUS", &buf, null);
-    const ssid = "ssid=";
-    var it = mem.tokenize(u8, resp, "\n");
-    while (it.next()) |line| {
-        if (mem.startsWith(u8, line, ssid)) {
-            // TODO: check line.len vs ssid.len
-            const v = try self.allocator.dupe(u8, line[ssid.len..]);
-            return v;
-        }
-    }
-    return null;
-}
-
-/// caller must hold self.mu.
-/// the retuned value must free'd with StringList.deinit.
-fn queryWifiScanResults(self: *Daemon) !StringList {
-    var buf: [8192:0]u8 = undefined; // TODO: what if isn't enough?
-    // first line is banner: "bssid / frequency / signal level / flags / ssid"
-    const resp = try self.wpa_ctrl.request("SCAN_RESULTS", &buf, null);
-    var it = mem.tokenize(u8, resp, "\n");
-    if (it.next() == null) {
-        return error.MissingWifiScanHeader;
-    }
-
-    var seen = std.BufSet.init(self.allocator);
-    defer seen.deinit();
-    var list = StringList.init(self.allocator);
-    errdefer list.deinit();
-    while (it.next()) |line| {
-        // TODO: wpactrl's text protocol won't work for names with control characters
-        if (mem.lastIndexOfScalar(u8, line, '\t')) |i| {
-            const s = mem.trim(u8, line[i..], "\t\n");
-            if (s.len == 0 or seen.contains(s)) {
-                continue;
-            }
-            try seen.insert(s);
-            try list.append(s);
-        }
-    }
-    return list;
-}
-
-const WifiNetworksListFilter = struct {
-    ssid: ?[]const u8, // ignore networks whose ssid doesn't match
-};
-
-/// caller must hold self.mu.
-/// the returned value must be free'd with self.allocator.
-fn queryWifiNetworksList(self: *Daemon, filter: WifiNetworksListFilter) ![]u32 {
-    var buf: [8192:0]u8 = undefined; // TODO: is this enough?
-    // first line is banner: "network id / ssid / bssid / flags"
-    const resp = try self.wpa_ctrl.request("LIST_NETWORKS", &buf, null);
-    var it = mem.tokenize(u8, resp, "\n");
-    if (it.next() == null) {
-        return error.MissingWifiNetworksListHeader;
-    }
-
-    var list = std.ArrayList(u32).init(self.allocator);
-    while (it.next()) |line| {
-        var cols = mem.tokenize(u8, line, "\t");
-        const id_str = cols.next() orelse continue; // bad line format?
-        const ssid = cols.next() orelse continue; // bad line format?
-        const id = std.fmt.parseUnsigned(u32, id_str, 10) catch continue; // skip bad line
-        if (filter.ssid != null and !mem.eql(u8, filter.ssid.?, ssid)) {
-            continue;
-        }
-        list.append(id) catch {}; // grab anything we can
-    }
-    return list.toOwnedSlice();
-}
-
-// TODO: turns this into a UniqStringList backed by StringArrayHashMap; also see std.BufSet
-const StringList = struct {
-    l: std.ArrayList([]const u8),
-    allocator: mem.Allocator,
-
-    const Self = @This();
-
-    pub fn init(allocator: mem.Allocator) Self {
-        return Self{
-            .l = std.ArrayList([]const u8).init(allocator),
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        for (self.l.items) |a| {
-            self.allocator.free(a);
-        }
-        self.l.deinit();
-    }
-
-    pub fn append(self: *Self, s: []const u8) !void {
-        const item = try self.allocator.dupe(u8, s);
-        errdefer self.allocator.free(item);
-        try self.l.append(item);
-    }
-
-    pub fn items(self: Self) []const []const u8 {
-        return self.l.items;
-    }
-};
-
 test "start-stop" {
     const t = std.testing;
 
     const pipe = try types.IoPipe.create();
-    defer pipe.close();
-    var daemon = try Daemon.init(t.allocator, pipe.writer(), "/dev/null");
+    var daemon = try Daemon.init(t.allocator, pipe.reader(), pipe.writer(), "/dev/null");
+    daemon.want_network_report = false;
 
     try t.expect(daemon.state == .stopped);
     try daemon.start();
     try t.expect(daemon.state == .running);
+    try t.expect(daemon.main_thread != null);
+    try t.expect(daemon.comm_thread != null);
+    try t.expect(daemon.poweroff_thread == null);
     try t.expect(daemon.wpa_ctrl.opened);
     try t.expect(daemon.wpa_ctrl.attached);
 
     daemon.stop();
+    pipe.close();
+    daemon.wait();
     try t.expect(daemon.state == .stopped);
-    try t.expect(!daemon.want_stop);
+    try t.expect(daemon.main_thread == null);
+    try t.expect(daemon.comm_thread == null);
+    try t.expect(daemon.poweroff_thread == null);
     try t.expect(!daemon.wpa_ctrl.attached);
     try t.expect(daemon.wpa_ctrl.opened);
-    try t.expect(daemon.main_thread == null);
-    try t.expect(daemon.poweroff_thread == null);
 
     try t.expect(daemon.services.len > 0);
     for (daemon.services) |*sv| {
@@ -610,7 +520,7 @@ test "start-stop" {
     try t.expect(!daemon.wpa_ctrl.opened);
 }
 
-test "start-poweroff-stop" {
+test "start-poweroff" {
     const t = std.testing;
     const tt = @import("../test.zig");
 
@@ -618,37 +528,44 @@ test "start-poweroff-stop" {
     defer arena_alloc.deinit();
     const arena = arena_alloc.allocator();
 
-    const pipe = try types.IoPipe.create();
-    var daemon = try Daemon.init(arena, pipe.writer(), "/dev/null");
+    const gui_stdin = try types.IoPipe.create();
+    const gui_stdout = try types.IoPipe.create();
+    const gui_reader = gui_stdin.reader();
+    var daemon = try Daemon.init(arena, gui_stdout.reader(), gui_stdin.writer(), "/dev/null");
+    daemon.want_network_report = false;
     defer {
         daemon.deinit();
-        pipe.close();
+        gui_stdin.close();
     }
 
     try daemon.start();
-    try daemon.beginPoweroff();
-    daemon.stop();
+    try comm.write(arena, gui_stdout.writer(), comm.Message.poweroff);
+    try test_poweroff_started.timedWait(2 * time.ns_per_s);
     try t.expect(daemon.state == .poweroff);
+
+    gui_stdout.close();
+    daemon.wait();
+    try t.expect(daemon.state == .stopped);
+    try t.expect(daemon.poweroff_thread == null);
     for (daemon.services) |*sv| {
         try t.expect(sv.stop_proc.spawned);
         try t.expect(sv.stop_proc.waited);
         try t.expectEqual(SysService.Status.stopped, sv.status());
     }
 
-    const pipe_reader = pipe.reader();
-    const msg1 = try comm.read(arena, pipe_reader);
+    const msg1 = try comm.read(arena, gui_reader);
     try tt.expectDeepEqual(comm.Message{ .poweroff_progress = .{ .services = &.{
         .{ .name = "lnd", .stopped = false, .err = null },
         .{ .name = "bitcoind", .stopped = false, .err = null },
     } } }, msg1);
 
-    const msg2 = try comm.read(arena, pipe_reader);
+    const msg2 = try comm.read(arena, gui_reader);
     try tt.expectDeepEqual(comm.Message{ .poweroff_progress = .{ .services = &.{
         .{ .name = "lnd", .stopped = true, .err = null },
         .{ .name = "bitcoind", .stopped = false, .err = null },
     } } }, msg2);
 
-    const msg3 = try comm.read(arena, pipe_reader);
+    const msg3 = try comm.read(arena, gui_reader);
     try tt.expectDeepEqual(comm.Message{ .poweroff_progress = .{ .services = &.{
         .{ .name = "lnd", .stopped = true, .err = null },
         .{ .name = "bitcoind", .stopped = true, .err = null },

@@ -143,6 +143,28 @@ pub const TestWpaControl = struct {
     pub fn request(_: Self, _: [:0]const u8, _: [:0]u8, _: ?nif.wpa.ReqCallback) ![]const u8 {
         return &.{};
     }
+
+    pub fn addNetwork(_: *Self) !u32 {
+        return 12345;
+    }
+
+    pub fn removeNetwork(_: *Self, id: u32) !void {
+        _ = id;
+    }
+
+    pub fn setNetworkParam(_: *Self, id: u32, name: []const u8, val: []const u8) !void {
+        _ = id;
+        _ = name;
+        _ = val;
+    }
+
+    pub fn selectNetwork(_: *Self, id: u32) !void {
+        _ = id;
+    }
+
+    pub fn enableNetwork(_: *Self, id: u32) !void {
+        _ = id;
+    }
 };
 
 /// similar to std.testing.expectEqual but compares slices with expectEqualSlices

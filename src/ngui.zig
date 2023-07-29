@@ -16,10 +16,12 @@ const symbol = @import("ui/symbol.zig");
 /// the program can handle it.
 pub const keep_sigpipe = true;
 
+const logger = std.log.scoped(.ngui);
+
+// these are auto-closed as soon as main fn terminates.
 const stdin = std.io.getStdIn().reader();
 const stdout = std.io.getStdOut().writer();
 const stderr = std.io.getStdErr().writer();
-const logger = std.log.scoped(.ngui);
 
 extern "c" fn ui_update_network_status(text: [*:0]const u8, wifi_list: ?[*:0]const u8) void;
 
@@ -31,15 +33,15 @@ var gpa: std.mem.Allocator = undefined;
 /// all nm_xxx functions assume it is the case since they are invoked from lvgl c code.
 var ui_mutex: std.Thread.Mutex = .{};
 
-/// the program runs until quit is true.
-/// set from sighandler or on unrecoverable comm failure with the daemon.
-var want_quit: bool = false;
-
 var state: enum {
     active, // normal operational mode
     standby, // idling
     alert, // draw user attention; never go standby
 } = .active;
+
+/// the program runs until sigquit is true.
+/// set from sighandler or on unrecoverable comm failure with the daemon.
+var sigquit: std.Thread.ResetEvent = .{};
 
 /// by setting wakeup brings the screen back from sleep()'ing without waiting for user action.
 /// can be used by comms when an alert is received from the daemon, to draw user attention.
@@ -151,28 +153,28 @@ fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
 /// loops indefinitely until program exit or comm returns EOS.
 fn commThreadLoop() void {
     while (true) {
-        commThreadLoopCycle() catch |err| logger.err("commThreadLoopCycle: {any}", .{err});
-
+        commThreadLoopCycle() catch |err| {
+            logger.err("commThreadLoopCycle: {any}", .{err});
+            if (err == error.EndOfStream) {
+                // pointless to continue running if comms is broken.
+                // a parent/supervisor is expected to restart ngui.
+                break;
+            }
+        };
         std.atomic.spinLoopHint();
-        time.sleep(1 * time.ns_per_ms);
+        time.sleep(10 * time.ns_per_ms);
     }
+
     logger.info("exiting commThreadLoop", .{});
+    sigquit.set();
 }
 
+/// runs one cycle of the commThreadLoop: read messages from stdin and update
+/// the UI accordingly.
 fn commThreadLoopCycle() !void {
-    const msg = comm.read(gpa, stdin) catch |err| {
-        if (err == error.EndOfStream) {
-            // pointless to continue running if comms is broken.
-            // a parent/supervisor is expected to restart ngui.
-            logger.err("comm.read: EOS", .{});
-            ui_mutex.lock();
-            want_quit = true;
-            ui_mutex.unlock();
-        }
-        return err;
-    };
+    const msg = try comm.read(gpa, stdin);
     defer comm.free(gpa, msg);
-    logger.debug("got msg tagged {s}", .{@tagName(msg)});
+    logger.debug("got msg: {s}", .{@tagName(msg)});
     switch (msg) {
         .ping => try comm.write(gpa, stdout, comm.Message.pong),
         .network_report => |report| {
@@ -187,14 +189,46 @@ fn commThreadLoopCycle() !void {
     }
 }
 
-/// prints messages in the same way std.fmt.format does and exits the process
-/// with a non-zero code.
-fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
-    stderr.print(fmt, args) catch {};
-    if (fmt[fmt.len - 1] != '\n') {
-        stderr.writeByte('\n') catch {};
+/// UI thread: LVGL loop runs here.
+/// must never block unless in idle/sleep mode.
+fn uiThreadLoop() void {
+    while (true) {
+        ui_mutex.lock();
+        var till_next_ms = lvgl.loopCycle(); // UI loop
+        const do_state = state;
+        ui_mutex.unlock();
+
+        switch (do_state) {
+            .active => {},
+            .alert => {},
+            .standby => {
+                // go into a screen sleep mode due to no user activity
+                wakeup.reset();
+                comm.write(gpa, stdout, comm.Message.standby) catch |err| {
+                    logger.err("comm.write standby: {any}", .{err});
+                };
+                screen.sleep(&wakeup); // blocking
+
+                // wake up due to touch screen activity or wakeup event is set
+                logger.info("waking up from sleep", .{});
+                ui_mutex.lock();
+                if (state == .standby) {
+                    state = .active;
+                    comm.write(gpa, stdout, comm.Message.wakeup) catch |err| {
+                        logger.err("comm.write wakeup: {any}", .{err});
+                    };
+                    lvgl.resetIdle();
+                }
+                ui_mutex.unlock();
+                continue;
+            },
+        }
+
+        std.atomic.spinLoopHint();
+        time.sleep(@max(1, till_next_ms) * time.ns_per_ms); // sleep at least 1ms
     }
-    std.process.exit(1);
+
+    logger.info("exiting UI thread loop", .{});
 }
 
 fn parseArgs(alloc: std.mem.Allocator) !void {
@@ -210,7 +244,8 @@ fn parseArgs(alloc: std.mem.Allocator) !void {
             try stderr.print("{any}\n", .{buildopts.semver});
             std.process.exit(0);
         } else {
-            fatal("unknown arg name {s}", .{a});
+            logger.err("unknown arg name {s}", .{a});
+            return error.UnknownArgName;
         }
     }
 }
@@ -227,15 +262,10 @@ fn usage(prog: []const u8) !void {
 }
 
 /// handles sig TERM and INT: makes the program exit.
-///
-/// note: must avoid locking ui_mutex within the handler since it may lead to
-/// a race and a deadlock where the sighandler is invoked while the mutex is held
-/// by the UI loop because a sighandler invocation interrupts main execution flow,
-/// and so the mutex would then remain locked indefinitely.
 fn sighandler(sig: c_int) callconv(.C) void {
     logger.info("received signal {}", .{sig});
     switch (sig) {
-        os.SIG.INT, os.SIG.TERM => want_quit = true,
+        os.SIG.INT, os.SIG.TERM => sigquit.set(),
         else => {},
     }
 }
@@ -258,11 +288,25 @@ pub fn main() anyerror!void {
     // initalizes display, input driver and finally creates the user interface.
     ui.init() catch |err| {
         logger.err("ui.init: {any}", .{err});
-        std.process.exit(1);
+        return err;
     };
 
-    // start comms with daemon in a seaparate thread.
-    _ = try std.Thread.spawn(.{}, commThreadLoop, .{});
+    // run idle timer indefinitely.
+    // continue on failure: screen standby won't work at the worst.
+    _ = lvgl.createTimer(nm_check_idle_time, 2000, null) catch |err| {
+        logger.err("lvgl.CreateTimer(idle check): {any}", .{err});
+    };
+
+    {
+        // start the main UI thread.
+        const th = try std.Thread.spawn(.{}, uiThreadLoop, .{});
+        th.detach();
+    }
+    {
+        // start comms with daemon in a seaparate thread.
+        const th = try std.Thread.spawn(.{}, commThreadLoop, .{});
+        th.detach();
+    }
 
     // set up a sigterm handler for clean exit.
     const sa = os.Sigaction{
@@ -272,48 +316,9 @@ pub fn main() anyerror!void {
     };
     try os.sigaction(os.SIG.INT, &sa, null);
     try os.sigaction(os.SIG.TERM, &sa, null);
+    sigquit.wait();
 
-    // run idle timer indefinitely
-    _ = lvgl.createTimer(nm_check_idle_time, 2000, null) catch |err| {
-        logger.err("idle timer: lvgl.CreateTimer failed: {any}", .{err});
-    };
-
-    // main UI thread; must never block unless in idle/sleep mode
-    while (!want_quit) {
-        ui_mutex.lock();
-        var till_next_ms = lvgl.loopCycle(); // UI loop
-        const do_state = state;
-        ui_mutex.unlock();
-
-        if (do_state == .standby) {
-            // go into a screen sleep mode due to no user activity
-            wakeup.reset();
-            comm.write(gpa, stdout, comm.Message.standby) catch |err| {
-                logger.err("comm.write standby: {any}", .{err});
-            };
-            screen.sleep(&wakeup);
-
-            // wake up due to touch screen activity or wakeup event is set
-            logger.info("waking up from sleep", .{});
-            ui_mutex.lock();
-            if (state == .standby) {
-                state = .active;
-                comm.write(gpa, stdout, comm.Message.wakeup) catch |err| {
-                    logger.err("comm.write wakeup: {any}", .{err});
-                };
-                lvgl.resetIdle();
-            }
-            ui_mutex.unlock();
-            continue;
-        }
-
-        std.atomic.spinLoopHint();
-        time.sleep(@max(1, till_next_ms) * time.ns_per_ms); // sleep at least 1ms
-    }
-    logger.info("main UI loop terminated", .{});
-
-    // not waiting for comm thread because it is terminated at program exit here
-    // anyway.
+    logger.info("main terminated", .{});
 }
 
 test "tick" {

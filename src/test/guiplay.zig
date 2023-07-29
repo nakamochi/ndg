@@ -8,12 +8,12 @@ const logger = std.log.scoped(.play);
 const stderr = std.io.getStdErr().writer();
 
 var ngui_proc: std.ChildProcess = undefined;
-var sigquit = false;
+var sigquit: std.Thread.ResetEvent = .{};
 
 fn sighandler(sig: c_int) callconv(.C) void {
     logger.info("received signal {} (TERM={} INT={})", .{ sig, os.SIG.TERM, os.SIG.INT });
     switch (sig) {
-        os.SIG.INT, os.SIG.TERM => sigquit = true,
+        os.SIG.INT, os.SIG.TERM => sigquit.set(),
         else => {},
     }
 }
@@ -72,6 +72,59 @@ fn parseArgs(gpa: std.mem.Allocator) !Flags {
     return flags;
 }
 
+fn commThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
+    comm.write(gpa, w, .ping) catch |err| logger.err("comm.write ping: {any}", .{err});
+
+    while (true) {
+        std.atomic.spinLoopHint();
+        time.sleep(100 * time.ns_per_ms);
+
+        const msg = comm.read(gpa, r) catch |err| {
+            if (err == error.EndOfStream) {
+                sigquit.set();
+                break;
+            }
+            logger.err("comm.read: {any}", .{err});
+            continue;
+        };
+
+        logger.debug("got ui msg tagged {s}", .{@tagName(msg)});
+        switch (msg) {
+            .pong => {
+                logger.info("received pong from ngui", .{});
+            },
+            .poweroff => {
+                logger.info("sending poweroff status1", .{});
+                var s1: comm.Message.PoweroffProgress = .{ .services = &.{
+                    .{ .name = "lnd", .stopped = false, .err = null },
+                    .{ .name = "bitcoind", .stopped = false, .err = null },
+                } };
+                comm.write(gpa, w, .{ .poweroff_progress = s1 }) catch |err| logger.err("comm.write: {any}", .{err});
+
+                time.sleep(2 * time.ns_per_s);
+                logger.info("sending poweroff status2", .{});
+                var s2: comm.Message.PoweroffProgress = .{ .services = &.{
+                    .{ .name = "lnd", .stopped = true, .err = null },
+                    .{ .name = "bitcoind", .stopped = false, .err = null },
+                } };
+                comm.write(gpa, w, .{ .poweroff_progress = s2 }) catch |err| logger.err("comm.write: {any}", .{err});
+
+                time.sleep(3 * time.ns_per_s);
+                logger.info("sending poweroff status3", .{});
+                var s3: comm.Message.PoweroffProgress = .{ .services = &.{
+                    .{ .name = "lnd", .stopped = true, .err = null },
+                    .{ .name = "bitcoind", .stopped = true, .err = null },
+                } };
+                comm.write(gpa, w, .{ .poweroff_progress = s3 }) catch |err| logger.err("comm.write: {any}", .{err});
+            },
+            else => {},
+        }
+    }
+
+    logger.info("exiting comm thread loop", .{});
+    sigquit.set();
+}
+
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa_state.deinit()) {
@@ -89,6 +142,11 @@ pub fn main() !void {
         fatal("unable to start ngui: {any}", .{err});
     };
 
+    // ngui proc stdio is auto-closed as soon as its main process terminates.
+    const uireader = ngui_proc.stdout.?.reader();
+    const uiwriter = ngui_proc.stdin.?.writer();
+    _ = try std.Thread.spawn(.{}, commThread, .{ gpa, uireader, uiwriter });
+
     const sa = os.Sigaction{
         .handler = .{ .handler = sighandler },
         .mask = os.empty_sigset,
@@ -96,61 +154,7 @@ pub fn main() !void {
     };
     try os.sigaction(os.SIG.INT, &sa, null);
     try os.sigaction(os.SIG.TERM, &sa, null);
-
-    const uireader = ngui_proc.stdout.?.reader();
-    const uiwriter = ngui_proc.stdin.?.writer();
-    comm.write(gpa, uiwriter, .ping) catch |err| {
-        logger.err("comm.write ping: {any}", .{err});
-    };
-
-    var poweroff = false;
-    while (!sigquit) {
-        std.atomic.spinLoopHint();
-        time.sleep(100 * time.ns_per_ms);
-        if (poweroff) {
-            // GUI is not expected to send anything back at this point,
-            // so just loop until we're terminated by a SIGTERM (sigquit).
-            continue;
-        }
-
-        const msg = comm.read(gpa, uireader) catch |err| {
-            logger.err("comm.read: {any}", .{err});
-            continue;
-        };
-        logger.debug("got ui msg tagged {s}", .{@tagName(msg)});
-        switch (msg) {
-            .pong => {
-                logger.info("received pong from ngui", .{});
-            },
-            .poweroff => {
-                poweroff = true;
-
-                logger.info("sending poweroff status1", .{});
-                var s1: comm.Message.PoweroffProgress = .{ .services = &.{
-                    .{ .name = "lnd", .stopped = false, .err = null },
-                    .{ .name = "bitcoind", .stopped = false, .err = null },
-                } };
-                comm.write(gpa, uiwriter, .{ .poweroff_progress = s1 }) catch |err| logger.err("comm.write: {any}", .{err});
-
-                time.sleep(2 * time.ns_per_s);
-                logger.info("sending poweroff status2", .{});
-                var s2: comm.Message.PoweroffProgress = .{ .services = &.{
-                    .{ .name = "lnd", .stopped = true, .err = null },
-                    .{ .name = "bitcoind", .stopped = false, .err = null },
-                } };
-                comm.write(gpa, uiwriter, .{ .poweroff_progress = s2 }) catch |err| logger.err("comm.write: {any}", .{err});
-
-                time.sleep(3 * time.ns_per_s);
-                logger.info("sending poweroff status3", .{});
-                var s3: comm.Message.PoweroffProgress = .{ .services = &.{
-                    .{ .name = "lnd", .stopped = true, .err = null },
-                    .{ .name = "bitcoind", .stopped = true, .err = null },
-                } };
-                comm.write(gpa, uiwriter, .{ .poweroff_progress = s3 }) catch |err| logger.err("comm.write: {any}", .{err});
-            },
-            else => {},
-        }
-    }
+    sigquit.wait();
 
     logger.info("killing ngui", .{});
     const term = ngui_proc.kill();
