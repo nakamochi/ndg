@@ -720,6 +720,8 @@ pub fn createSpinner(parent: *LvObj) !*LvObj {
 
 /// returns a red button style.
 pub extern fn nm_style_btn_red() *LvStyle; // TODO: make it private
+/// returns a title style with a larger font.
+pub extern fn nm_style_title() *LvStyle; // TODO: make it private
 
 // the "native" lv_obj_set/get user_data are static inline, so make our own funcs.
 extern "c" fn nm_obj_userdata(obj: *LvObj) ?*anyopaque;

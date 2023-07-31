@@ -185,6 +185,11 @@ fn commThreadLoopCycle() !void {
             defer ui_mutex.unlock();
             ui.poweroff.updateStatus(report) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
         },
+        .bitcoind_report => |rep| {
+            ui_mutex.lock();
+            defer ui_mutex.unlock();
+            ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
+        },
         else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
     }
 }

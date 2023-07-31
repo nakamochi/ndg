@@ -27,6 +27,7 @@ pub const Message = union(MessageTag) {
     network_report: NetworkReport,
     get_network_report: GetNetworkReport,
     poweroff_progress: PoweroffProgress,
+    bitcoind_report: BitcoindReport,
 
     pub const WifiConnect = struct {
         ssid: []const u8,
@@ -52,6 +53,25 @@ pub const Message = union(MessageTag) {
             err: ?[]const u8,
         };
     };
+
+    pub const BitcoindReport = struct {
+        blocks: u64,
+        //headers: u64,
+        timestamp: u64, // unix epoch
+        hash: []const u8, // best block hash
+        ibd: bool, // initial block download
+        verifyprogress: u8, // 0-100%
+        diskusage: u64, // estimated size on disk, in bytes
+        version: []const u8, // bitcoin core version string
+        conn_in: u16,
+        conn_out: u16,
+        warnings: []const u8,
+        localaddr: []struct {
+            addr: []const u8,
+            port: u16,
+            score: i16,
+        },
+    };
 };
 
 /// it is important to preserve ordinal values for future compatiblity,
@@ -69,7 +89,9 @@ pub const MessageTag = enum(u16) {
     wakeup = 0x08,
     // nd -> ngui: reports poweroff progress
     poweroff_progress = 0x09,
-    // next: 0x0a
+    // nd -> ngui: bitcoin core daemon status report
+    bitcoind_report = 0x0a,
+    // next: 0x0b
 };
 
 /// reads and parses a single message from the input stream reader.
@@ -111,6 +133,9 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !Message {
         .poweroff_progress => Message{
             .poweroff_progress = try json.parse(Message.PoweroffProgress, &jstream, jopt),
         },
+        .bitcoind_report => Message{
+            .bitcoind_report = try json.parse(Message.BitcoindReport, &jstream, jopt),
+        },
     };
 }
 
@@ -126,6 +151,7 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
         .network_report => try json.stringify(msg.network_report, jopt, data.writer()),
         .get_network_report => try json.stringify(msg.get_network_report, jopt, data.writer()),
         .poweroff_progress => try json.stringify(msg.poweroff_progress, jopt, data.writer()),
+        .bitcoind_report => try json.stringify(msg.bitcoind_report, jopt, data.writer()),
     }
     if (data.items.len > std.math.maxInt(u64)) {
         return Error.CommWriteTooLarge;

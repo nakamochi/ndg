@@ -135,6 +135,16 @@ pub fn build(b: *std.build.Builder) void {
         guiplay_build_step.dependOn(&b.addInstallArtifact(guiplay).step);
         guiplay_build_step.dependOn(ngui_build_step);
     }
+
+    {
+        const btcrpc = b.addExecutable("btcrpc", "src/test/btcrpc.zig");
+        btcrpc.setTarget(target);
+        btcrpc.setBuildMode(mode);
+        btcrpc.strip = strip;
+        btcrpc.addPackagePath("bitcoindrpc", "src/nd/bitcoindrpc.zig");
+        const btcrpc_build_step = b.step("btcrpc", "bitcoin core playground");
+        btcrpc_build_step.dependOn(&b.addInstallArtifact(btcrpc).step);
+    }
 }
 
 const DriverTarget = enum {

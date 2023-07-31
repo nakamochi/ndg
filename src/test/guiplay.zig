@@ -72,7 +72,7 @@ fn parseArgs(gpa: std.mem.Allocator) !Flags {
     return flags;
 }
 
-fn commThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
+fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
     comm.write(gpa, w, .ping) catch |err| logger.err("comm.write ping: {any}", .{err});
 
     while (true) {
@@ -125,6 +125,38 @@ fn commThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
     sigquit.set();
 }
 
+fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
+    var sectimer = try time.Timer.start();
+    var block_count: u64 = 0;
+
+    while (true) {
+        time.sleep(time.ns_per_s);
+        if (sectimer.read() < time.ns_per_s) {
+            continue;
+        }
+
+        sectimer.reset();
+        block_count += 1;
+        const now = time.timestamp();
+
+        const btcrep: comm.Message.BitcoindReport = .{
+            .blocks = block_count,
+            .headers = block_count,
+            .timestamp = @intCast(u64, now),
+            .hash = "00000012345",
+            .ibd = false,
+            .verifyprogress = 100,
+            .diskusage = 567119364054,
+            .version = "/Satoshi:24.0.1/",
+            .conn_in = 8,
+            .conn_out = 10,
+            .warnings = "",
+            .localaddr = &.{},
+        };
+        comm.write(gpa, w, .{ .bitcoind_report = btcrep }) catch |err| logger.err("comm.write: {any}", .{err});
+    }
+}
+
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa_state.deinit()) {
@@ -145,7 +177,10 @@ pub fn main() !void {
     // ngui proc stdio is auto-closed as soon as its main process terminates.
     const uireader = ngui_proc.stdout.?.reader();
     const uiwriter = ngui_proc.stdin.?.writer();
-    _ = try std.Thread.spawn(.{}, commThread, .{ gpa, uireader, uiwriter });
+    const th1 = try std.Thread.spawn(.{}, commReadThread, .{ gpa, uireader, uiwriter });
+    th1.detach();
+    const th2 = try std.Thread.spawn(.{}, commWriteThread, .{ gpa, uiwriter });
+    th2.detach();
 
     const sa = os.Sigaction{
         .handler = .{ .handler = sighandler },
