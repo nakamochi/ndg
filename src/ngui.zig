@@ -141,7 +141,7 @@ fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
     // can happen with a fresh connection while dhcp is still in progress.
     if (report.wifi_ssid != null and report.ipaddrs.len == 0) {
         // TODO: sometimes this is too fast, not all ip addrs are avail (ipv4 vs ipv6)
-        if (lvgl.createTimer(nm_request_network_status, 1000, null)) |t| {
+        if (lvgl.LvTimer.new(nm_request_network_status, 1000, null)) |t| {
             t.setRepeatCount(1);
         } else |err| {
             logger.err("network status timer failed: {any}", .{err});
@@ -293,8 +293,8 @@ pub fn main() anyerror!void {
 
     // run idle timer indefinitely.
     // continue on failure: screen standby won't work at the worst.
-    _ = lvgl.createTimer(nm_check_idle_time, 2000, null) catch |err| {
-        logger.err("lvgl.CreateTimer(idle check): {any}", .{err});
+    _ = lvgl.LvTimer.new(nm_check_idle_time, 2000, null) catch |err| {
+        logger.err("lvgl.LvTimer.new(idle check): {any}", .{err});
     };
 
     {

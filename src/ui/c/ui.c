@@ -72,6 +72,11 @@ extern lv_style_t *nm_style_btn_red()
     return &style_btn_red;
 }
 
+extern lv_style_t *nm_style_title()
+{
+    return &style_title;
+}
+
 static void textarea_event_cb(lv_event_t *e)
 {
     lv_obj_t *textarea = lv_event_get_target(e);

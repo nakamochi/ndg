@@ -56,7 +56,7 @@ pub fn updateStatus(report: comm.Message.PoweroffProgress) !void {
             all_stopped = all_stopped and sv.stopped;
         }
         if (all_stopped) {
-            win.status.setLabelText("powering off ...");
+            win.status.setText("powering off ...");
         }
     } else {
         return error.NoProgressWindow;
@@ -67,8 +67,8 @@ pub fn updateStatus(report: comm.Message.PoweroffProgress) !void {
 /// the device turns off.
 const ProgressWin = struct {
     win: lvgl.Window,
-    status: *lvgl.LvObj, // text status label
-    svcont: *lvgl.LvObj, // services container
+    status: lvgl.Label, // text status
+    svcont: lvgl.FlexLayout, // services container
 
     /// symbol width next to the service name. this aligns all service names vertically.
     /// has to be wide enough to accomodate the spinner, but not too wide
@@ -76,21 +76,18 @@ const ProgressWin = struct {
     const sym_width = 20;
 
     fn create() !ProgressWin {
-        const win = try lvgl.createWindow(null, 60, " " ++ symbol.Power ++ " SHUTDOWN");
-        errdefer win.winobj.destroy(); // also deletes all children created below
-        const wincont = win.content();
-        wincont.flexFlow(.column);
+        const win = try lvgl.Window.newTop(60, " " ++ symbol.Power ++ " SHUTDOWN");
+        errdefer win.destroy(); // also deletes all children created below
+        const wincont = win.content().flex(.column, .{});
 
         // initial status message
-        const status = try lvgl.createLabel(wincont, "shutting down services. it may take up to a few minutes.", .{});
+        const status = try lvgl.Label.new(wincont, "shutting down services. it may take up to a few minutes.", .{});
         status.setWidth(lvgl.sizePercent(100));
+
         // prepare a container for services status
-        const svcont = try lvgl.createObject(wincont);
-        svcont.removeBackgroundStyle();
-        svcont.flexFlow(.column);
-        svcont.flexGrow(1);
-        svcont.padColumnDefault();
+        const svcont = try lvgl.FlexLayout.new(wincont, .column, .{});
         svcont.setWidth(lvgl.sizePercent(100));
+        svcont.flexGrow(1);
 
         return .{
             .win = win,
@@ -104,32 +101,28 @@ const ProgressWin = struct {
     }
 
     fn addServiceStatus(self: ProgressWin, name: []const u8, stopped: bool, err: ?[]const u8) !void {
-        const row = try lvgl.createObject(self.svcont);
-        row.removeBackgroundStyle();
-        row.flexFlow(.row);
-        row.flexAlign(.center, .center, .center);
-        row.padColumnDefault();
+        const row = try lvgl.FlexLayout.new(self.svcont, .row, .{ .all = .center });
         row.setPad(10, .all, .{});
         row.setWidth(lvgl.sizePercent(100));
         row.setHeightToContent();
 
         var buf: [100]u8 = undefined;
         if (err) |e| {
-            const sym = try lvgl.createLabelFmt(row, &buf, symbol.Warning, .{}, .{ .long_mode = .clip });
+            const sym = try lvgl.Label.newFmt(row, &buf, symbol.Warning, .{}, .{ .long_mode = .clip });
             sym.setWidth(sym_width);
-            sym.setTextColor(lvgl.paletteMain(.red), .{});
-            const lb = try lvgl.createLabelFmt(row, &buf, "{s}: {s}", .{ name, e }, .{ .long_mode = .dot });
-            lb.setTextColor(lvgl.paletteMain(.red), .{});
+            sym.setColor(lvgl.Palette.main(.red), .{});
+            const lb = try lvgl.Label.newFmt(row, &buf, "{s}: {s}", .{ name, e }, .{ .long_mode = .dot });
+            lb.setColor(lvgl.Palette.main(.red), .{});
             lb.flexGrow(1);
         } else if (stopped) {
-            const sym = try lvgl.createLabelFmt(row, &buf, symbol.Ok, .{}, .{ .long_mode = .clip });
+            const sym = try lvgl.Label.newFmt(row, &buf, symbol.Ok, .{}, .{ .long_mode = .clip });
             sym.setWidth(sym_width);
-            const lb = try lvgl.createLabelFmt(row, &buf, "{s}", .{name}, .{ .long_mode = .dot });
+            const lb = try lvgl.Label.newFmt(row, &buf, "{s}", .{name}, .{ .long_mode = .dot });
             lb.flexGrow(1);
         } else {
-            const spin = try lvgl.createSpinner(row);
+            const spin = try lvgl.Spinner.new(row);
             spin.setWidth(sym_width);
-            const lb = try lvgl.createLabelFmt(row, &buf, "{s}", .{name}, .{ .long_mode = .dot });
+            const lb = try lvgl.Label.newFmt(row, &buf, "{s}", .{name}, .{ .long_mode = .dot });
             lb.flexGrow(1);
         }
     }

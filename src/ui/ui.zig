@@ -27,18 +27,15 @@ pub fn init() !void {
 }
 
 export fn nm_create_info_panel(parent: *lvgl.LvObj) c_int {
-    createInfoPanel(parent) catch |err| {
+    createInfoPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
         logger.err("createInfoPanel: {any}", .{err});
         return -1;
     };
     return 0;
 }
 
-fn createInfoPanel(parent: *lvgl.LvObj) !void {
-    parent.flexFlow(.column);
-    parent.flexAlign(.start, .start, .start);
-
+fn createInfoPanel(cont: lvgl.Container) !void {
+    const flex = cont.flex(.column, .{});
     var buf: [100]u8 = undefined;
-    const sver = try std.fmt.bufPrintZ(&buf, "GUI version: {any}", .{buildopts.semver});
-    _ = try lvgl.createLabel(parent, sver, .{});
+    _ = try lvgl.Label.newFmt(flex, &buf, "GUI version: {any}", .{buildopts.semver}, .{});
 }

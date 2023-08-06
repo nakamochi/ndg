@@ -10,31 +10,30 @@ const logger = std.log.scoped(.ui);
 /// unsafe for concurrent use.
 pub fn topdrop(onoff: enum { show, remove }) void {
     // a static construct: there can be only one global topdrop.
-    // see https://ziglang.org/documentation/master/#Static-Local-Variables
+    // https://ziglang.org/documentation/master/#Static-Local-Variables
     const S = struct {
-        var lv_obj: ?*lvgl.LvObj = null;
+        var top: ?lvgl.Container = null;
     };
     switch (onoff) {
         .show => {
-            if (S.lv_obj != null) {
+            if (S.top != null) {
                 return;
             }
 
-            const o = lvgl.createTopObject() catch |err| {
-                logger.err("topdrop: lvgl.createTopObject: {any}", .{err});
+            const top = lvgl.Container.newTop() catch |err| {
+                logger.err("topdrop: lvgl.Container.newTop: {any}", .{err});
                 return;
             };
-            o.setFlag(.on, .ignore_layout);
-            o.resizeToMax();
-            o.setBackgroundColor(lvgl.Black, .{});
-
-            S.lv_obj = o;
-            lvgl.displayRedraw();
+            top.setFlag(.ignore_layout);
+            top.resizeToMax();
+            top.setBackgroundColor(lvgl.Black, .{});
+            S.top = top;
+            lvgl.redraw();
         },
         .remove => {
-            if (S.lv_obj) |o| {
-                o.destroy();
-                S.lv_obj = null;
+            if (S.top) |top| {
+                top.destroy();
+                S.top = null;
             }
         },
     }
@@ -53,51 +52,46 @@ pub const ModalButtonCallbackFn = *const fn (index: usize) void;
 ///
 /// note: the cb callback must have @alignOf(ModalbuttonCallbackFn) alignment.
 pub fn modal(title: [*:0]const u8, text: [*:0]const u8, btns: []const [*:0]const u8, cb: ModalButtonCallbackFn) !void {
-    const win = try lvgl.createWindow(null, 60, title);
-    errdefer win.winobj.destroy(); // also deletes all children created below
-    win.winobj.setUserdata(cb);
+    const win = try lvgl.Window.newTop(60, title);
+    errdefer win.destroy(); // also deletes all children created below
+    win.setUserdata(cb);
 
-    const wincont = win.content();
-    wincont.flexFlow(.column);
-    wincont.flexAlign(.start, .center, .center);
-    const msg = try lvgl.createLabel(wincont, text, .{ .pos = .center });
-    msg.setWidth(lvgl.displayHoriz() - 100);
+    const wincont = win.content().flex(.column, .{ .cross = .center, .track = .center });
+    const msg = try lvgl.Label.new(wincont, text, .{ .pos = .center });
+    msg.setWidth(lvgl.LvDisp.horiz() - 100);
     msg.flexGrow(1);
 
-    const btncont = try lvgl.createFlexObject(wincont, .row);
-    btncont.removeBackgroundStyle();
-    btncont.padColumnDefault();
-    btncont.flexAlign(.center, .center, .center);
-    btncont.setWidth(lvgl.displayHoriz() - 40);
+    // buttons container
+    const btncont = try lvgl.FlexLayout.new(wincont, .row, .{ .all = .center });
+    btncont.setWidth(lvgl.LvDisp.horiz() - 40);
     btncont.setHeightToContent();
 
     // leave 5% as an extra spacing.
     const btnwidth = lvgl.sizePercent(try std.math.divFloor(i16, 95, @truncate(u8, btns.len)));
     for (btns) |btext, i| {
-        const btn = try lvgl.createButton(btncont, btext);
+        const btn = try lvgl.TextButton.new(btncont, btext);
+        btn.setFlag(.event_bubble);
+        btn.setFlag(.user1); // .user1 indicates actionable button in callback
+        btn.setUserdata(@intToPtr(?*anyopaque, i)); // button index in callback
         btn.setWidth(btnwidth);
-        btn.setFlag(.on, .event_bubble);
-        btn.setFlag(.on, .user1); // .user1 indicates actionable button in callback
         if (i == 0) {
             btn.addStyle(lvgl.nm_style_btn_red(), .{});
         }
-        btn.setUserdata(@intToPtr(?*anyopaque, i)); // button index in callback
     }
-    _ = btncont.on(.click, nm_modal_callback, win.winobj);
+    _ = btncont.on(.click, nm_modal_callback, win.lvobj);
 }
 
 export fn nm_modal_callback(e: *lvgl.LvEvent) void {
-    if (e.userdata()) |event_data| {
-        const target = e.target();
-        if (!target.hasFlag(.user1)) { // .user1 is set by modal fn
+    if (e.userdata()) |edata| {
+        const target = lvgl.Container{ .lvobj = e.target() }; // type doesn't really matter
+        if (!target.hasFlag(.user1)) { // .user1 is set in modal setup
             return;
         }
 
         const btn_index = @ptrToInt(target.userdata());
-        const winobj = @ptrCast(*lvgl.LvObj, event_data);
-        // guaranteed to be aligned due to cb arg in modal fn.
-        const cb = @ptrCast(ModalButtonCallbackFn, @alignCast(@alignOf(ModalButtonCallbackFn), winobj.userdata()));
-        winobj.destroy();
+        const win = lvgl.Window{ .lvobj = @ptrCast(*lvgl.LvObj, edata) };
+        const cb = @ptrCast(ModalButtonCallbackFn, @alignCast(@alignOf(ModalButtonCallbackFn), win.userdata()));
+        win.destroy();
         cb(btn_index);
     }
 }
