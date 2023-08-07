@@ -482,7 +482,8 @@ pub const Container = struct {
     /// suitable for widgets like a popup window.
     pub fn newTop() !Container {
         const toplayer = lv_disp_get_layer_top(null);
-        return .{ .lvobj = toplayer };
+        const o = lv_obj_create(toplayer) orelse return error.OutOfMemory;
+        return .{ .lvobj = o };
     }
 
     /// applies flex layout to the container.
