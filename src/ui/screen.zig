@@ -13,10 +13,19 @@ const logger = std.log.scoped(.screen);
 /// a touch screen activity or wake event is triggered.
 /// sleep removes all input devices at enter and reinstates them at exit so that
 /// a touch event triggers no accidental action.
-pub fn sleep(wake: *const Thread.ResetEvent) void {
+///
+/// the UI mutex is held while calling LVGL UI functions, and released during
+/// idling or waiting for wake event.
+/// although sleep is safe for concurrent use, the input drivers init/deinit
+/// implementation used on entry and exit might not be.
+pub fn sleep(ui: *std.Thread.Mutex, wake: *const Thread.ResetEvent) void {
+    ui.lock();
     drv.deinitInput();
     widget.topdrop(.show);
+    ui.unlock();
     defer {
+        ui.lock();
+        defer ui.unlock();
         drv.initInput() catch |err| logger.err("drv.initInput: {any}", .{err});
         widget.topdrop(.remove);
     }

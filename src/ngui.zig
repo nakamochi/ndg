@@ -67,8 +67,12 @@ export fn nm_get_curr_tick() u32 {
 export fn nm_check_idle_time(_: *lvgl.LvTimer) void {
     const standby_idle_ms = 60000; // 60sec
     const idle_ms = lvgl.idleTime();
-    if (idle_ms > standby_idle_ms and state != .alert) {
-        state = .standby;
+    if (idle_ms < standby_idle_ms) {
+        return;
+    }
+    switch (state) {
+        .alert, .standby => {},
+        .active => state = .standby,
     }
 }
 
@@ -105,10 +109,8 @@ export fn nm_wifi_start_connect(ssid: [*:0]const u8, password: [*:0]const u8) vo
     };
 }
 
+/// callers must hold ui mutex for the whole duration.
 fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
-    ui_mutex.lock();
-    defer ui_mutex.unlock();
-
     var wifi_list: ?[:0]const u8 = null;
     var wifi_list_ptr: ?[*:0]const u8 = null;
     if (report.wifi_scan_networks.len > 0) {
@@ -171,26 +173,32 @@ fn commThreadLoop() void {
 
 /// runs one cycle of the commThreadLoop: read messages from stdin and update
 /// the UI accordingly.
+/// holds ui mutex for most of the duration.
 fn commThreadLoopCycle() !void {
     const msg = try comm.read(gpa, stdin);
     defer comm.free(gpa, msg);
     logger.debug("got msg: {s}", .{@tagName(msg)});
-    switch (msg) {
-        .ping => try comm.write(gpa, stdout, comm.Message.pong),
-        .network_report => |report| {
-            updateNetworkStatus(report) catch |err| logger.err("updateNetworkStatus: {any}", .{err});
+
+    ui_mutex.lock(); // guards state and all UI calls below
+    defer ui_mutex.unlock();
+    switch (state) {
+        .standby => switch (msg) {
+            .ping => try comm.write(gpa, stdout, comm.Message.pong),
+            else => logger.debug("ignoring: in standby", .{}),
         },
-        .poweroff_progress => |report| {
-            ui_mutex.lock();
-            defer ui_mutex.unlock();
-            ui.poweroff.updateStatus(report) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
+        .active, .alert => switch (msg) {
+            .ping => try comm.write(gpa, stdout, comm.Message.pong),
+            .network_report => |report| {
+                updateNetworkStatus(report) catch |err| logger.err("updateNetworkStatus: {any}", .{err});
+            },
+            .poweroff_progress => |report| {
+                ui.poweroff.updateStatus(report) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
+            },
+            .bitcoind_report => |rep| {
+                ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
+            },
+            else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
         },
-        .bitcoind_report => |rep| {
-            ui_mutex.lock();
-            defer ui_mutex.unlock();
-            ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
-        },
-        else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
     }
 }
 
@@ -212,7 +220,7 @@ fn uiThreadLoop() void {
                 comm.write(gpa, stdout, comm.Message.standby) catch |err| {
                     logger.err("comm.write standby: {any}", .{err});
                 };
-                screen.sleep(&wakeup); // blocking
+                screen.sleep(&ui_mutex, &wakeup); // blocking
 
                 // wake up due to touch screen activity or wakeup event is set
                 logger.info("waking up from sleep", .{});
