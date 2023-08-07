@@ -7,6 +7,7 @@ const drv = @import("drv.zig");
 const symbol = @import("symbol.zig");
 const widget = @import("widget.zig");
 pub const poweroff = @import("poweroff.zig");
+pub const bitcoin = @import("bitcoin.zig");
 
 const logger = std.log.scoped(.ui);
 
@@ -29,6 +30,14 @@ pub fn init() !void {
 export fn nm_create_info_panel(parent: *lvgl.LvObj) c_int {
     createInfoPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
         logger.err("createInfoPanel: {any}", .{err});
+        return -1;
+    };
+    return 0;
+}
+
+export fn nm_create_bitcoin_panel(parent: *lvgl.LvObj) c_int {
+    bitcoin.initTabPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
+        logger.err("createBitcoinPanel: {any}", .{err});
         return -1;
     };
     return 0;

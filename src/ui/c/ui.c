@@ -21,6 +21,11 @@ void nm_sys_shutdown();
 int nm_create_info_panel(lv_obj_t *parent);
 
 /**
+ * creates the bitcoin tab panel.
+ */
+int nm_create_bitcoin_panel(lv_obj_t *parent);
+
+/**
  * invoken when the UI is switched to the network settings tab.
  */
 void nm_tab_settings_active();
@@ -101,15 +106,6 @@ static void textarea_event_cb(lv_event_t *e)
         lv_obj_clear_state(textarea, LV_STATE_FOCUSED);
         lv_indev_reset(NULL, textarea); /* forget last obj to make it focusable again */
     }
-}
-
-static void create_bitcoin_panel(lv_obj_t *parent)
-{
-    lv_obj_t *label = lv_label_create(parent);
-    lv_label_set_text_static(label,
-        "bitcoin tab isn't designed yet\n"
-        "follow https://nakamochi.io");
-    lv_obj_center(label);
 }
 
 static void create_lnd_panel(lv_obj_t *parent)
@@ -338,7 +334,9 @@ extern int nm_ui_init(lv_disp_t *disp)
     if (tab_btc == NULL) {
         return -1;
     }
-    create_bitcoin_panel(tab_btc);
+    if (nm_create_bitcoin_panel(tab_btc) != 0) {
+        return -1;
+    }
 
     lv_obj_t *tab_lnd = lv_tabview_add_tab(tabview, NM_SYMBOL_BOLT " LIGHTNING");
     if (tab_lnd == NULL) {
