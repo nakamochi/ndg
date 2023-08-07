@@ -20,6 +20,7 @@ const network = @import("network.zig");
 const screen = @import("../ui/screen.zig");
 const types = @import("../types.zig");
 const SysService = @import("SysService.zig");
+const bitcoindrpc = @import("bitcoindrpc.zig");
 
 const logger = std.log.scoped(.daemon);
 
@@ -50,6 +51,10 @@ want_wifi_scan: bool, // initiate wifi scan at the next loop cycle
 network_report_ready: bool, // indicates whether the network status is ready to be sent
 wifi_scan_in_progress: bool = false,
 wpa_save_config_on_connected: bool = false,
+// bitcoin flags
+want_bitcoind_report: bool,
+bitcoin_timer: time.Timer,
+bitcoin_report_interval: u64 = 1 * time.ns_per_min,
 
 /// system services actively managed by the daemon.
 /// these are stop'ed during poweroff and their shutdown progress sent to ngui.
@@ -82,6 +87,9 @@ pub fn init(a: std.mem.Allocator, r: std.fs.File.Reader, w: std.fs.File.Writer, 
         .want_network_report = true,
         .want_wifi_scan = false,
         .network_report_ready = true,
+        // report bitcoind status immediately on start
+        .want_bitcoind_report = true,
+        .bitcoin_timer = try time.Timer.start(),
     };
 }
 
@@ -267,6 +275,14 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
             self.want_network_report = false;
         } else |err| {
             logger.err("network.sendReport: {any}", .{err});
+        }
+    }
+    if (self.want_bitcoind_report or self.bitcoin_timer.read() > self.bitcoin_report_interval) {
+        if (self.sendBitcoindReport()) {
+            self.bitcoin_timer.reset();
+            self.want_bitcoind_report = false;
+        } else |err| {
+            logger.err("sendBitcoinReport: {any}", .{err});
         }
     }
 }
@@ -484,12 +500,54 @@ fn readWPACtrlMsg(self: *Daemon) !void {
     }
 }
 
+fn sendBitcoindReport(self: *Daemon) !void {
+    var client = bitcoindrpc.Client{
+        .allocator = self.allocator,
+        .cookiepath = "/ssd/bitcoind/mainnet/.cookie",
+    };
+    const bcinfo = try client.call(.getblockchaininfo, {});
+    defer bcinfo.deinit();
+    const netinfo = try client.call(.getnetworkinfo, {});
+    defer netinfo.deinit();
+    const mempool = try client.call(.getmempoolinfo, {});
+    defer mempool.deinit();
+
+    const btcrep: comm.Message.BitcoindReport = .{
+        .blocks = bcinfo.value.blocks,
+        .headers = bcinfo.value.headers,
+        .timestamp = bcinfo.value.time,
+        .hash = bcinfo.value.bestblockhash,
+        .ibd = bcinfo.value.initialblockdownload,
+        .diskusage = bcinfo.value.size_on_disk,
+        .version = netinfo.value.subversion,
+        .conn_in = netinfo.value.connections_in,
+        .conn_out = netinfo.value.connections_out,
+        .warnings = bcinfo.value.warnings, // TODO: netinfo.result.warnings
+        .localaddr = &.{}, // TODO: populate
+        // something similar to this:
+        // @round(bcinfo.verificationprogress * 100)
+        .verifyprogress = 0,
+        .mempool = .{
+            .loaded = mempool.value.loaded,
+            .txcount = mempool.value.size,
+            .usage = mempool.value.usage,
+            .max = mempool.value.maxmempool,
+            .totalfee = mempool.value.total_fee,
+            .minfee = mempool.value.mempoolminfee,
+            .fullrbf = mempool.value.fullrbf,
+        },
+    };
+
+    try comm.write(self.allocator, self.uiwriter, .{ .bitcoind_report = btcrep });
+}
+
 test "start-stop" {
     const t = std.testing;
 
     const pipe = try types.IoPipe.create();
     var daemon = try Daemon.init(t.allocator, pipe.reader(), pipe.writer(), "/dev/null");
     daemon.want_network_report = false;
+    daemon.want_bitcoind_report = false;
 
     try t.expect(daemon.state == .stopped);
     try daemon.start();
@@ -533,6 +591,7 @@ test "start-poweroff" {
     const gui_reader = gui_stdin.reader();
     var daemon = try Daemon.init(arena, gui_stdout.reader(), gui_stdin.writer(), "/dev/null");
     daemon.want_network_report = false;
+    daemon.want_bitcoind_report = false;
     defer {
         daemon.deinit();
         gui_stdin.close();
