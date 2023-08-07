@@ -33,11 +33,55 @@ var gpa: std.mem.Allocator = undefined;
 /// all nm_xxx functions assume it is the case since they are invoked from lvgl c code.
 var ui_mutex: std.Thread.Mutex = .{};
 
+/// current state of the GUI.
+/// guarded by ui_mutex since some nm_xxx funcs branch based off of the state.
 var state: enum {
     active, // normal operational mode
     standby, // idling
     alert, // draw user attention; never go standby
 } = .active;
+
+/// last report received from comm.
+/// deinit'ed at program exit.
+/// while deinit and replace handle concurrency, field access requires holding mu.
+var last_report: struct {
+    mu: std.Thread.Mutex = .{},
+    network: ?comm.Message.NetworkReport = null,
+    bitcoind: ?comm.Message.BitcoindReport = null,
+
+    fn deinit(self: *@This()) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.network) |v| {
+            comm.free(gpa, .{ .network_report = v });
+            self.network = null;
+        }
+        if (self.bitcoind) |v| {
+            comm.free(gpa, .{ .bitcoind_report = v });
+            self.bitcoind = null;
+        }
+    }
+
+    fn replace(self: *@This(), new: anytype) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        switch (@TypeOf(new)) {
+            comm.Message.NetworkReport => {
+                if (self.network) |old| {
+                    comm.free(gpa, .{ .network_report = old });
+                }
+                self.network = new;
+            },
+            comm.Message.BitcoindReport => {
+                if (self.bitcoind) |old| {
+                    comm.free(gpa, .{ .bitcoind_report = old });
+                }
+                self.bitcoind = new;
+            },
+            else => @compileError("unhandled type: " ++ @typeName(@TypeOf(new))),
+        }
+    }
+} = .{};
 
 /// the program runs until sigquit is true.
 /// set from sighandler or on unrecoverable comm failure with the daemon.
@@ -175,27 +219,29 @@ fn commThreadLoop() void {
 /// the UI accordingly.
 /// holds ui mutex for most of the duration.
 fn commThreadLoopCycle() !void {
-    const msg = try comm.read(gpa, stdin);
-    defer comm.free(gpa, msg);
-    logger.debug("got msg: {s}", .{@tagName(msg)});
-
-    ui_mutex.lock(); // guards state and all UI calls below
+    const msg = try comm.read(gpa, stdin); // blocking
+    ui_mutex.lock(); // guards the state and all UI calls below
     defer ui_mutex.unlock();
     switch (state) {
         .standby => switch (msg) {
             .ping => try comm.write(gpa, stdout, comm.Message.pong),
-            else => logger.debug("ignoring: in standby", .{}),
+            .network_report => |v| last_report.replace(v),
+            .bitcoind_report => |v| last_report.replace(v),
+            else => logger.debug("ignoring {s}: in standby", .{@tagName(msg)}),
         },
         .active, .alert => switch (msg) {
             .ping => try comm.write(gpa, stdout, comm.Message.pong),
-            .network_report => |report| {
-                updateNetworkStatus(report) catch |err| logger.err("updateNetworkStatus: {any}", .{err});
+            .poweroff_progress => |rep| {
+                ui.poweroff.updateStatus(rep) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
+                comm.free(gpa, msg);
             },
-            .poweroff_progress => |report| {
-                ui.poweroff.updateStatus(report) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
+            .network_report => |rep| {
+                updateNetworkStatus(rep) catch |err| logger.err("updateNetworkStatus: {any}", .{err});
+                last_report.replace(rep);
             },
             .bitcoind_report => |rep| {
                 ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
+                last_report.replace(rep);
             },
             else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
         },
@@ -225,14 +271,23 @@ fn uiThreadLoop() void {
                 // wake up due to touch screen activity or wakeup event is set
                 logger.info("waking up from sleep", .{});
                 ui_mutex.lock();
+                defer ui_mutex.unlock();
                 if (state == .standby) {
                     state = .active;
                     comm.write(gpa, stdout, comm.Message.wakeup) catch |err| {
                         logger.err("comm.write wakeup: {any}", .{err});
                     };
                     lvgl.resetIdle();
+
+                    last_report.mu.lock();
+                    defer last_report.mu.unlock();
+                    if (last_report.network) |rep| {
+                        updateNetworkStatus(rep) catch |err| logger.err("updateNetworkStatus: {any}", .{err});
+                    }
+                    if (last_report.bitcoind) |rep| {
+                        ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
+                    }
                 }
-                ui_mutex.unlock();
                 continue;
             },
         }
@@ -331,6 +386,7 @@ pub fn main() anyerror!void {
     try os.sigaction(os.SIG.TERM, &sa, null);
     sigquit.wait();
 
+    last_report.deinit();
     logger.info("main terminated", .{});
 }
 
