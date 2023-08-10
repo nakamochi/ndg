@@ -62,40 +62,34 @@ pub fn addWifi(gpa: mem.Allocator, wpa_ctrl: *types.WpaControl, ssid: []const u8
 
 /// reports network status to the writer w in `comm.Message.NetworkReport` format.
 pub fn sendReport(gpa: mem.Allocator, wpa_ctrl: *types.WpaControl, w: anytype) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var report = comm.Message.NetworkReport{
         .ipaddrs = undefined,
         .wifi_ssid = null,
-        .wifi_scan_networks = undefined,
+        .wifi_scan_networks = &.{},
     };
 
     // fetch all public IP addresses using getifaddrs
-    const pubaddr = try nif.pubAddresses(gpa, null);
-    defer gpa.free(pubaddr);
-    //var addrs = std.ArrayList([]).init(t.allocator);
-    var ipaddrs = try gpa.alloc([]const u8, pubaddr.len);
-    for (pubaddr) |a, i| {
-        ipaddrs[i] = try std.fmt.allocPrint(gpa, "{s}", .{a});
+    const pubaddr = try nif.pubAddresses(arena, null);
+    var ipaddr = try std.ArrayList([]const u8).initCapacity(arena, pubaddr.len);
+    for (pubaddr) |apub| {
+        try ipaddr.append(try std.fmt.allocPrint(arena, "{}", .{apub}));
     }
-    defer {
-        for (ipaddrs) |a| gpa.free(a);
-        gpa.free(ipaddrs);
-    }
-    report.ipaddrs = ipaddrs;
+    report.ipaddrs = try ipaddr.toOwnedSlice();
 
     // get currently connected SSID, if any, from WPA ctrl
-    const ssid = queryWifiSSID(gpa, wpa_ctrl) catch |err| blk: {
+    report.wifi_ssid = queryWifiSSID(arena, wpa_ctrl) catch |err| blk: {
         logger.err("queryWifiSsid: {any}", .{err});
         break :blk null;
     };
-    defer if (ssid) |v| gpa.free(v);
-    report.wifi_ssid = ssid;
 
     // fetch available wifi networks from scan results using WPA ctrl
-    var wifi_networks: ?types.StringList = if (queryWifiScanResults(gpa, wpa_ctrl)) |v| v else |err| blk: {
+    var wifi_networks: ?types.StringList = if (queryWifiScanResults(arena, wpa_ctrl)) |v| v else |err| blk: {
         logger.err("queryWifiScanResults: {any}", .{err});
         break :blk null;
     };
-    defer if (wifi_networks) |*list| list.deinit();
     if (wifi_networks) |list| {
         report.wifi_scan_networks = list.items();
     }
@@ -179,5 +173,5 @@ fn queryWifiNetworksList(gpa: mem.Allocator, wpa_ctrl: *types.WpaControl, filter
         }
         list.append(id) catch {}; // grab anything we can
     }
-    return list.toOwnedSlice();
+    return try list.toOwnedSlice();
 }

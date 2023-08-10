@@ -67,12 +67,12 @@ pub fn modal(title: [*:0]const u8, text: [*:0]const u8, btns: []const [*:0]const
     btncont.setHeightToContent();
 
     // leave 5% as an extra spacing.
-    const btnwidth = lvgl.sizePercent(try std.math.divFloor(i16, 95, @truncate(u8, btns.len)));
-    for (btns) |btext, i| {
+    const btnwidth = lvgl.sizePercent(try std.math.divFloor(i16, 95, @as(u8, @truncate(btns.len))));
+    for (btns, 0..) |btext, i| {
         const btn = try lvgl.TextButton.new(btncont, btext);
         btn.setFlag(.event_bubble);
         btn.setFlag(.user1); // .user1 indicates actionable button in callback
-        btn.setUserdata(@intToPtr(?*anyopaque, i)); // button index in callback
+        btn.setUserdata(@ptrFromInt(i)); // button index in callback
         btn.setWidth(btnwidth);
         if (i == 0) {
             btn.addStyle(lvgl.nm_style_btn_red(), .{});
@@ -88,9 +88,9 @@ export fn nm_modal_callback(e: *lvgl.LvEvent) void {
             return;
         }
 
-        const btn_index = @ptrToInt(target.userdata());
-        const win = lvgl.Window{ .lvobj = @ptrCast(*lvgl.LvObj, edata) };
-        const cb = @ptrCast(ModalButtonCallbackFn, @alignCast(@alignOf(ModalButtonCallbackFn), win.userdata()));
+        const btn_index = @intFromPtr(target.userdata());
+        const win = lvgl.Window{ .lvobj = @ptrCast(edata) };
+        const cb: ModalButtonCallbackFn = @alignCast(@ptrCast(win.userdata()));
         win.destroy();
         cb(btn_index);
     }

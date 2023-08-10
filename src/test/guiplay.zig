@@ -87,9 +87,10 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
             logger.err("comm.read: {any}", .{err});
             continue;
         };
+        defer msg.deinit();
 
-        logger.debug("got ui msg tagged {s}", .{@tagName(msg)});
-        switch (msg) {
+        logger.debug("got msg: {s}", .{@tagName(msg.value)});
+        switch (msg.value) {
             .pong => {
                 logger.info("received pong from ngui", .{});
             },
@@ -131,18 +132,18 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
 
     while (true) {
         time.sleep(time.ns_per_s);
-        if (sectimer.read() < time.ns_per_s) {
+        if (sectimer.read() < 3 * time.ns_per_s) {
             continue;
         }
-
         sectimer.reset();
+
         block_count += 1;
         const now = time.timestamp();
 
         const btcrep: comm.Message.BitcoindReport = .{
             .blocks = block_count,
             .headers = block_count,
-            .timestamp = @intCast(u64, now),
+            .timestamp = @intCast(now),
             .hash = "00000000000000000002bf8029f6be4e40b4a3e0e161b6a1044ddaf9eb126504",
             .ibd = false,
             .verifyprogress = 100,
@@ -155,7 +156,7 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
             .mempool = .{
                 .loaded = true,
                 .txcount = 100000 + block_count,
-                .usage = std.math.min(200123456 + block_count * 10, 300000000),
+                .usage = @min(200123456 + block_count * 10, 300000000),
                 .max = 300000000,
                 .totalfee = 2.23049932,
                 .minfee = 0.00004155,
@@ -168,7 +169,7 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
 
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa_state.deinit()) {
+    defer if (gpa_state.deinit() == .leak) {
         logger.err("memory leaks detected", .{});
     };
     const gpa = gpa_state.allocator();

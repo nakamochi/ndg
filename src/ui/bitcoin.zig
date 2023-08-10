@@ -106,10 +106,10 @@ pub fn updateTabPanel(rep: comm.Message.BitcoindReport) !void {
         if (rep.mempool.max == 0) {
             break :pct 0;
         }
-        const v = @intToFloat(f64, rep.mempool.usage) / @intToFloat(f64, rep.mempool.max);
-        break :pct @floatCast(f32, v * 100);
+        const v = @as(f64, @floatFromInt(rep.mempool.usage)) / @as(f64, @floatFromInt(rep.mempool.max));
+        break :pct @floatCast(v * 100);
     };
-    tab.mempool.usage_bar.setValue(@floatToInt(i32, @round(mempool_pct)));
+    tab.mempool.usage_bar.setValue(@as(i32, @intFromFloat(@round(mempool_pct))));
     try tab.mempool.usage_lab.setTextFmt(&buf, "{:.1} " ++ cmark ++ "out of# {:.1} ({d:.1}%)", .{
         fmt.fmtIntSizeBin(rep.mempool.usage),
         fmt.fmtIntSizeBin(rep.mempool.max),

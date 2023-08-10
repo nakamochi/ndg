@@ -82,7 +82,7 @@ pub fn init(a: std.mem.Allocator, r: std.fs.File.Reader, w: std.fs.File.Writer, 
         .uiwriter = w,
         .wpa_ctrl = try types.WpaControl.open(wpa),
         .state = .stopped,
-        .services = svlist.toOwnedSlice(),
+        .services = try svlist.toOwnedSlice(),
         // send a network report right at start without wifi scan to make it faster.
         .want_network_report = true,
         .want_wifi_scan = false,
@@ -297,7 +297,7 @@ fn commThreadLoop(self: *Daemon) void {
         std.atomic.spinLoopHint();
         time.sleep(100 * time.ns_per_ms);
 
-        const msg = comm.read(self.allocator, self.uireader) catch |err| {
+        const res = comm.read(self.allocator, self.uireader) catch |err| {
             self.mu.lock();
             defer self.mu.unlock();
             if (self.want_stop) {
@@ -316,7 +316,9 @@ fn commThreadLoop(self: *Daemon) void {
                 },
             }
         };
+        defer res.deinit();
 
+        const msg = res.value;
         logger.debug("got msg: {s}", .{@tagName(msg)});
         switch (msg) {
             .pong => {
@@ -343,12 +345,12 @@ fn commThreadLoop(self: *Daemon) void {
             },
             else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
         }
-        comm.free(self.allocator, msg);
 
         self.mu.lock();
         quit = self.want_stop;
         self.mu.unlock();
     }
+
     logger.info("exiting comm thread loop", .{});
 }
 
@@ -356,8 +358,8 @@ fn commThreadLoop(self: *Daemon) void {
 fn sendPoweroffReport(self: *Daemon) !void {
     var svstat = try self.allocator.alloc(comm.Message.PoweroffProgress.Service, self.services.len);
     defer self.allocator.free(svstat);
-    for (self.services) |*sv, i| {
-        svstat[i] = .{
+    for (self.services, svstat) |*sv, *stat| {
+        stat.* = .{
             .name = sv.name,
             .stopped = sv.status() == .stopped,
             .err = if (sv.lastStopError()) |err| @errorName(err) else null,
@@ -616,19 +618,19 @@ test "start-poweroff" {
     try tt.expectDeepEqual(comm.Message{ .poweroff_progress = .{ .services = &.{
         .{ .name = "lnd", .stopped = false, .err = null },
         .{ .name = "bitcoind", .stopped = false, .err = null },
-    } } }, msg1);
+    } } }, msg1.value);
 
     const msg2 = try comm.read(arena, gui_reader);
     try tt.expectDeepEqual(comm.Message{ .poweroff_progress = .{ .services = &.{
         .{ .name = "lnd", .stopped = true, .err = null },
         .{ .name = "bitcoind", .stopped = false, .err = null },
-    } } }, msg2);
+    } } }, msg2.value);
 
     const msg3 = try comm.read(arena, gui_reader);
     try tt.expectDeepEqual(comm.Message{ .poweroff_progress = .{ .services = &.{
         .{ .name = "lnd", .stopped = true, .err = null },
         .{ .name = "bitcoind", .stopped = true, .err = null },
-    } } }, msg3);
+    } } }, msg3.value);
 
     // TODO: ensure "poweroff" was executed once custom runner is in a zig release;
     // need custom runner to set up a global registry for child processes.

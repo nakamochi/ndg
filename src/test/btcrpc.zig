@@ -4,7 +4,7 @@ const bitcoinrpc = @import("bitcoindrpc");
 
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa_state.deinit()) {
+    defer if (gpa_state.deinit() == .leak) {
         std.debug.print("memory leaks detected!", .{});
     };
     const gpa = gpa_state.allocator();

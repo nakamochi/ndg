@@ -14,7 +14,7 @@ fn formatUnix(sec: u64, comptime fmt: []const u8, opts: std.fmt.FormatOptions, w
     if (sec > std.math.maxInt(u47)) {
         // EpochSeconds.getEpochDay trucates to u47 which results in a "truncated bits"
         // panic for too big numbers. so, just print raw digits.
-        return std.fmt.format(w, "{d}", .{sec});
+        return std.fmt.formatInt(sec, 10, .lower, .{}, w);
     }
     const epoch: std.time.epoch.EpochSeconds = .{ .secs = sec };
     const daysec = epoch.getDaySeconds();

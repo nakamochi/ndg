@@ -126,7 +126,7 @@ fn sighandler(sig: c_int) callconv(.C) void {
 pub fn main() !void {
     // main heap allocator used throughout the lifetime of nd
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa_state.deinit()) {
+    defer if (gpa_state.deinit() == .leak) {
         logger.err("memory leaks detected", .{});
     };
     const gpa = gpa_state.allocator();

@@ -1,21 +1,23 @@
-const build = @import("std").build;
+const std = @import("std");
 
-pub fn addPkg(b: *build.Builder, obj: *build.LibExeObjStep, prefix: []const u8) void {
-    obj.addPackagePath("nif", pkgPath(b, prefix));
-}
+pub fn build(b: *std.Build) void {
+    _ = b.addModule("nif", .{ .source_file = .{ .path = "nif.zig" } });
 
-pub fn pkgPath(b: *build.Builder, prefix: []const u8) []const u8 {
-    return b.pathJoin(&.{ prefix, "nif.zig" });
-}
-
-pub fn library(b: *build.Builder, prefix: []const u8) *build.LibExeObjStep {
-    const lib = b.addStaticLibrary("nif", b.pathJoin(&.{ prefix, "nif.zig" }));
-    lib.addIncludePath(b.pathJoin(&.{ prefix, "wpa_supplicant" }));
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+    const lib = b.addStaticLibrary(.{
+        .name = "nif",
+        .root_source_file = .{ .path = "nif.zig" },
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
     lib.defineCMacro("CONFIG_CTRL_IFACE", null);
     lib.defineCMacro("CONFIG_CTRL_IFACE_UNIX", null);
+    lib.addIncludePath(.{ .path = "wpa_supplicant" });
     lib.addCSourceFiles(&.{
-        b.pathJoin(&.{ prefix, "wpa_supplicant/wpa_ctrl.c" }),
-        b.pathJoin(&.{ prefix, "wpa_supplicant/os_unix.c" }),
+        "wpa_supplicant/wpa_ctrl.c",
+        "wpa_supplicant/os_unix.c",
     }, &.{
         "-Wall",
         "-Wextra",
@@ -24,6 +26,5 @@ pub fn library(b: *build.Builder, prefix: []const u8) *build.LibExeObjStep {
         "-Wunused-parameter",
         "-Werror",
     });
-    lib.linkLibC();
-    return lib;
+    b.installArtifact(lib);
 }

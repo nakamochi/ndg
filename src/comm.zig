@@ -103,22 +103,37 @@ pub const MessageTag = enum(u16) {
     // next: 0x0b
 };
 
+/// the return value type from `read` fn.
+pub const ParsedMessage = struct {
+    value: Message,
+    arena: ?*std.heap.ArenaAllocator = null, // null for void message tags
+
+    /// releases all resources used by the message.
+    pub fn deinit(self: @This()) void {
+        if (self.arena) |a| {
+            const allocator = a.child_allocator;
+            a.deinit();
+            allocator.destroy(a);
+        }
+    }
+};
+
 /// reads and parses a single message from the input stream reader.
 /// propagates reader errors as is. for example, a closed reader returns
 /// error.EndOfStream.
 ///
-/// callers must deallocate resources with Message.free when done.
-pub fn read(allocator: mem.Allocator, reader: anytype) !Message {
+/// callers must deallocate resources with ParsedMessage.deinit when done.
+pub fn read(allocator: mem.Allocator, reader: anytype) !ParsedMessage {
     // alternative is @intToEnum(reader.ReadIntLittle(u16)) but it may panic.
     const tag = try reader.readEnum(MessageTag, .Little);
     const len = try reader.readIntLittle(u64);
     if (len == 0) {
         return switch (tag) {
-            .ping => Message{ .ping = {} },
-            .pong => Message{ .pong = {} },
-            .poweroff => Message{ .poweroff = {} },
-            .standby => Message{ .standby = {} },
-            .wakeup => Message{ .wakeup = {} },
+            .ping => .{ .value = .{ .ping = {} } },
+            .pong => .{ .value = .{ .pong = {} } },
+            .poweroff => .{ .value = .{ .poweroff = {} } },
+            .standby => .{ .value = .{ .standby = {} } },
+            .wakeup => .{ .value = .{ .wakeup = {} } },
             else => Error.CommReadZeroLenInNonVoidTag,
         };
     }
@@ -126,24 +141,22 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !Message {
     var bytes = try allocator.alloc(u8, len);
     defer allocator.free(bytes);
     try reader.readNoEof(bytes);
-    const jopt = json.ParseOptions{ .allocator = allocator, .ignore_unknown_fields = true };
-    var jstream = json.TokenStream.init(bytes);
     return switch (tag) {
         .ping, .pong, .poweroff, .standby, .wakeup => unreachable, // handled above
-        .wifi_connect => Message{
-            .wifi_connect = try json.parse(Message.WifiConnect, &jstream, jopt),
-        },
-        .network_report => Message{
-            .network_report = try json.parse(Message.NetworkReport, &jstream, jopt),
-        },
-        .get_network_report => Message{
-            .get_network_report = try json.parse(Message.GetNetworkReport, &jstream, jopt),
-        },
-        .poweroff_progress => Message{
-            .poweroff_progress = try json.parse(Message.PoweroffProgress, &jstream, jopt),
-        },
-        .bitcoind_report => Message{
-            .bitcoind_report = try json.parse(Message.BitcoindReport, &jstream, jopt),
+        inline else => |t| {
+            var arena = try allocator.create(std.heap.ArenaAllocator);
+            arena.* = std.heap.ArenaAllocator.init(allocator);
+            errdefer {
+                arena.deinit();
+                allocator.destroy(arena);
+            }
+            const jopt = std.json.ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always };
+            const v = try json.parseFromSliceLeaky(std.meta.TagPayload(Message, t), arena.allocator(), bytes, jopt);
+            const parsed = ParsedMessage{
+                .arena = arena,
+                .value = @unionInit(Message, @tagName(t), v),
+            };
+            return parsed;
         },
     };
 }
@@ -151,33 +164,23 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !Message {
 /// outputs the message msg using writer.
 /// all allocated resources are freed upon return.
 pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
-    const jopt = .{ .whitespace = null };
     var data = ByteArrayList.init(allocator);
     defer data.deinit();
     switch (msg) {
         .ping, .pong, .poweroff, .standby, .wakeup => {}, // zero length payload
-        .wifi_connect => try json.stringify(msg.wifi_connect, jopt, data.writer()),
-        .network_report => try json.stringify(msg.network_report, jopt, data.writer()),
-        .get_network_report => try json.stringify(msg.get_network_report, jopt, data.writer()),
-        .poweroff_progress => try json.stringify(msg.poweroff_progress, jopt, data.writer()),
-        .bitcoind_report => try json.stringify(msg.bitcoind_report, jopt, data.writer()),
+        .wifi_connect => try json.stringify(msg.wifi_connect, .{}, data.writer()),
+        .network_report => try json.stringify(msg.network_report, .{}, data.writer()),
+        .get_network_report => try json.stringify(msg.get_network_report, .{}, data.writer()),
+        .poweroff_progress => try json.stringify(msg.poweroff_progress, .{}, data.writer()),
+        .bitcoind_report => try json.stringify(msg.bitcoind_report, .{}, data.writer()),
     }
     if (data.items.len > std.math.maxInt(u64)) {
         return Error.CommWriteTooLarge;
     }
 
-    try writer.writeIntLittle(u16, @enumToInt(msg));
+    try writer.writeIntLittle(u16, @intFromEnum(msg));
     try writer.writeIntLittle(u64, data.items.len);
     try writer.writeAll(data.items);
-}
-
-pub fn free(allocator: mem.Allocator, m: Message) void {
-    switch (m) {
-        .ping, .pong, .poweroff, .standby, .wakeup => {}, // zero length payload
-        else => |v| {
-            json.parseFree(@TypeOf(v), v, .{ .allocator = allocator });
-        },
-    }
 }
 
 // TODO: use fifo
@@ -206,16 +209,16 @@ test "read" {
 
     var buf = std.ArrayList(u8).init(t.allocator);
     defer buf.deinit();
-    try buf.writer().writeIntLittle(u16, @enumToInt(msg));
+    try buf.writer().writeIntLittle(u16, @intFromEnum(msg));
     try buf.writer().writeIntLittle(u64, data.items.len);
     try buf.writer().writeAll(data.items);
 
     var bs = std.io.fixedBufferStream(buf.items);
     const res = try read(t.allocator, bs.reader());
-    defer free(t.allocator, res);
+    defer res.deinit();
 
-    try t.expectEqualStrings(msg.wifi_connect.ssid, res.wifi_connect.ssid);
-    try t.expectEqualStrings(msg.wifi_connect.password, res.wifi_connect.password);
+    try t.expectEqualStrings(msg.wifi_connect.ssid, res.value.wifi_connect.ssid);
+    try t.expectEqualStrings(msg.wifi_connect.password, res.value.wifi_connect.password);
 }
 
 test "write" {
@@ -229,7 +232,7 @@ test "write" {
     const payload = "{\"ssid\":\"wlan\",\"password\":\"secret\"}";
     var js = std.ArrayList(u8).init(t.allocator);
     defer js.deinit();
-    try js.writer().writeIntLittle(u16, @enumToInt(msg));
+    try js.writer().writeIntLittle(u16, @intFromEnum(msg));
     try js.writer().writeIntLittle(u64, payload.len);
     try js.appendSlice(payload);
 
@@ -255,8 +258,8 @@ test "write/read void tags" {
         try write(t.allocator, buf.writer(), m);
         var bs = std.io.fixedBufferStream(buf.items);
         const res = try read(t.allocator, bs.reader());
-        free(t.allocator, res); // noop
-        try t.expectEqual(m, res);
+        res.deinit(); // noop due to void type
+        try t.expectEqual(m, res.value);
     }
 }
 
@@ -283,7 +286,7 @@ test "msg sequence" {
     var bs = std.io.fixedBufferStream(buf.items);
     for (msgs) |m| {
         const res = try read(t.allocator, bs.reader());
-        defer free(t.allocator, res);
-        try t.expectEqual(@as(MessageTag, m), @as(MessageTag, res));
+        defer res.deinit();
+        try t.expectEqual(@as(MessageTag, m), @as(MessageTag, res.value));
     }
 }

@@ -55,16 +55,7 @@ pub const Client = struct {
     };
 
     pub fn Result(comptime m: Method) type {
-        return struct {
-            value: ResultValue(m),
-            arena: *ArenaAllocator,
-
-            pub fn deinit(self: @This()) void {
-                const allocator = self.arena.child_allocator;
-                self.arena.deinit();
-                allocator.destroy(self.arena);
-            }
-        };
+        return std.json.Parsed(ResultValue(m));
     }
 
     pub fn ResultValue(comptime m: Method) type {
@@ -142,27 +133,16 @@ pub const Client = struct {
     }
 
     fn parseResponse(self: Client, comptime m: Method, b: []const u8) !Result(m) {
-        var result = Result(m){
-            .value = undefined,
-            .arena = try self.allocator.create(ArenaAllocator),
-        };
-        errdefer self.allocator.destroy(result.arena);
-        result.arena.* = ArenaAllocator.init(self.allocator);
-
-        var jstream = std.json.TokenStream.init(b);
-        const jopt = std.json.ParseOptions{ .allocator = result.arena.allocator(), .ignore_unknown_fields = true };
-        const resp = try std.json.parse(RpcResponse(m), &jstream, jopt);
-
-        errdefer result.arena.deinit();
-        if (resp.@"error") |errfield| {
+        const jopt = std.json.ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always };
+        const resp = try std.json.parseFromSlice(RpcResponse(m), self.allocator, b, jopt);
+        errdefer resp.deinit();
+        if (resp.value.@"error") |errfield| {
             return rpcErrorFromCode(errfield.code) orelse error.UnknownError;
         }
-        if (resp.result == null) {
+        if (resp.value.result == null) {
             return error.NullResult;
         }
-
-        result.value = resp.result.?;
-        return result;
+        return .{ .value = resp.value.result.?, .arena = resp.arena };
     }
 
     fn formatreq(self: *Client, comptime m: Method, args: MethodArgs(m)) ![]const u8 {
@@ -189,7 +169,7 @@ pub const Client = struct {
         try w.print("Content-Length: {d}\r\n", .{jreq.items.len});
         try w.writeAll("\r\n");
         try w.writeAll(jreq.items);
-        return bytes.toOwnedSlice();
+        return try bytes.toOwnedSlice();
     }
 
     fn getAuthBase64(self: Client) ![]const u8 {

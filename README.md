@@ -2,13 +2,13 @@
 
 build for rpi:
 
-    zig build -Dtarget=aarch64-linux-musl -Ddriver=fbev -Drelease-safe -Dstrip
+    zig build -Dtarget=aarch64-linux-musl -Ddriver=fbev -Doptimize=ReleaseSafe -Dstrip
 
 otherwise just `zig build` on dev host
 
 ## local development
 
-you'll need [zig v0.10.x](https://ziglang.org/download/).
+you'll need [zig v0.11.x](https://ziglang.org/download/).
 if working on the gui, also [SDL2](https://www.libsdl.org/).
 
 note that compiling the daemon on macOS is currently unsupported since
@@ -58,17 +58,17 @@ to make a new image and switch the CI to use it, first modify the
 [ci-containerfile](tools/ci-containerfile) and produce the image locally:
 
     podman build --rm -t ndg-ci -f ./tools/ci-containerfile \
-      --build-arg ZIGURL=https://ziglang.org/download/0.10.1/zig-linux-x86_64-0.10.1.tar.xz
+      --build-arg ZIGURL=https://ziglang.org/download/0.11.0/zig-linux-x86_64-0.11.0.tar.xz
 
 then tag it with the target URL, for example:
 
-    podman tag localhost/ndg-ci git.qcode.ch/nakamochi/ci-zig0.10.1:v1
+    podman tag localhost/ndg-ci git.qcode.ch/nakamochi/ci-zig0.11.0:v2
 
 generate an [access token](https://git.qcode.ch/user/settings/applications),
 login to the container registry and push the image to remote:
 
     podman login git.qcode.ch
-    podman push git.qcode.ch/nakamochi/ci-zig0.10.1:v1
+    podman push git.qcode.ch/nakamochi/ci-zig0.11.0:v2
 
 the image will be available at
 https://git.qcode.ch/nakamochi/-/packages/

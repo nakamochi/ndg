@@ -1,12 +1,12 @@
 # ci container file for compiling and testing zig projects.
 # requires a ZIGURL build arg. for instance:
-# podman build --rm -t ci-zig0.10.1 -f ci-containerfile \
-#   --build-arg ZIGURL=https://ziglang.org/download/0.10.1/zig-linux-x86_64-0.10.1.tar.xz
+# podman build --rm -t ci-zig0.11.0 -f ci-containerfile \
+#   --build-arg ZIGURL=https://ziglang.org/download/0.11.0/zig-linux-x86_64-0.11.0.tar.xz
 
-FROM alpine:3.17.1
+FROM alpine:3.18.3
 
 ARG ZIGURL
-RUN apk add --no-cache git curl xz sdl2-dev clang15-extra-tools && \
+RUN apk add --no-cache git curl xz libc-dev sdl2-dev clang16-extra-tools && \
     mkdir -p /tools/zig && \
     cd /tools/zig && \
     curl -o zig.tar.xz $ZIGURL && \

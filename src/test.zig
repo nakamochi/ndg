@@ -55,8 +55,8 @@ pub const TestChildProcess = struct {
 
     pub fn init(argv: []const []const u8, allocator: std.mem.Allocator) TestChildProcess {
         var adup = allocator.alloc([]u8, argv.len) catch unreachable;
-        for (argv) |v, i| {
-            adup[i] = allocator.dupe(u8, v) catch unreachable;
+        for (argv, adup) |v, *dup| {
+            dup.* = allocator.dupe(u8, v) catch unreachable;
         }
         return .{
             .allocator = allocator,
@@ -167,10 +167,10 @@ pub const TestWpaControl = struct {
     }
 };
 
-/// similar to std.testing.expectEqual but compares slices with expectEqualSlices
+/// similar to std.testing.expectEqualDeep but compares slices with expectEqualSlices
 /// or expectEqualStrings where slice element is a u8.
+/// unhandled types are passed to std.testing.expectEqualDeep.
 pub fn expectDeepEqual(expected: anytype, actual: @TypeOf(expected)) !void {
-    const t = std.testing;
     switch (@typeInfo(@TypeOf(actual))) {
         .Pointer => |p| {
             switch (p.size) {
@@ -185,7 +185,7 @@ pub fn expectDeepEqual(expected: anytype, actual: @TypeOf(expected)) !void {
                                 }
                                 break :blk null;
                             };
-                            const n = std.math.min(expected.len, actual.len);
+                            const n = @min(expected.len, actual.len);
                             var i: usize = 0;
                             while (i < n) : (i += 1) {
                                 expectDeepEqual(expected[i], actual[i]) catch |e| {
@@ -199,14 +199,14 @@ pub fn expectDeepEqual(expected: anytype, actual: @TypeOf(expected)) !void {
                         },
                         else => {
                             if (p.child == u8) {
-                                try t.expectEqualStrings(expected, actual);
+                                try std.testing.expectEqualStrings(expected, actual);
                             } else {
-                                try t.expectEqualSlices(p.child, expected, actual);
+                                try std.testing.expectEqualSlices(p.child, expected, actual);
                             }
                         },
                     }
                 },
-                else => try t.expectEqual(expected, actual),
+                else => try std.testing.expectEqualDeep(expected, actual),
             }
         },
         .Struct => |st| {
@@ -238,17 +238,15 @@ pub fn expectDeepEqual(expected: anytype, actual: @TypeOf(expected)) !void {
             }
             const Tag = std.meta.Tag(@TypeOf(expected));
             const atag = @as(Tag, actual);
-            try t.expectEqual(@as(Tag, expected), atag);
-            inline for (u.fields) |f| {
-                if (std.mem.eql(u8, f.name, @tagName(atag))) {
-                    try expectDeepEqual(@field(expected, f.name), @field(actual, f.name));
-                    return;
-                }
+            try std.testing.expectEqual(@as(Tag, expected), atag);
+            switch (expected) {
+                inline else => |x, tag| {
+                    try expectDeepEqual(x, @field(actual, @tagName(tag)));
+                },
             }
-            unreachable;
         },
         else => {
-            try t.expectEqual(expected, actual);
+            try std.testing.expectEqualDeep(expected, actual);
         },
     }
 }

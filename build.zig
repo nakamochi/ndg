@@ -1,20 +1,26 @@
 const std = @import("std");
-const nifbuild = @import("lib/nif/build.zig");
 
-pub fn build(b: *std.build.Builder) void {
+pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const mode = b.standardReleaseOptions();
-
+    const optimize = b.standardOptimizeOption(.{});
     const strip = b.option(bool, "strip", "strip output binary; default: false") orelse false;
     const drv = b.option(DriverTarget, "driver", "display and input drivers combo; default: sdl2") orelse .sdl2;
     const disp_horiz = b.option(u32, "horiz", "display horizontal pixels count; default: 800") orelse 800;
     const disp_vert = b.option(u32, "vert", "display vertical pixels count; default: 480") orelse 480;
-    const lvgl_loglevel = b.option(LVGLLogLevel, "lvgl_loglevel", "LVGL lib logging level") orelse LVGLLogLevel.default(mode);
+    const lvgl_loglevel = b.option(LVGLLogLevel, "lvgl_loglevel", "LVGL lib logging level") orelse LVGLLogLevel.default(optimize);
     const inver = b.option([]const u8, "version", "semantic version of the build; must match git tag when available");
 
     const buildopts = b.addOptions();
     buildopts.addOption(DriverTarget, "driver", drv);
     const semver_step = VersionStep.create(b, buildopts, inver);
+    buildopts.step.dependOn(semver_step);
+
+    // network interface (nif) standalone library used by the daemon and tests.
+    const libnif_dep = b.anonymousDependency("lib/nif", @import("lib/nif/build.zig"), .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const libnif = libnif_dep.artifact("nif");
 
     const common_cflags = .{
         "-Wall",
@@ -25,17 +31,18 @@ pub fn build(b: *std.build.Builder) void {
     };
 
     // gui build
-    const ngui = b.addExecutable("ngui", "src/ngui.zig");
-    ngui.setTarget(target);
-    ngui.setBuildMode(mode);
+    const ngui = b.addExecutable(.{
+        .name = "ngui",
+        .root_source_file = .{ .path = "src/ngui.zig" },
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
     ngui.pie = true;
     ngui.strip = strip;
-    ngui.step.dependOn(semver_step);
-
-    ngui.addPackage(buildopts.getPackage("build_options"));
-    ngui.addIncludePath("lib");
-    ngui.addIncludePath("src/ui/c");
-    ngui.linkLibC();
+    ngui.addOptions("build_options", buildopts);
+    ngui.addIncludePath(.{ .path = "lib" });
+    ngui.addIncludePath(.{ .path = "src/ui/c" });
 
     const lvgl_flags = .{
         "-std=c11",
@@ -68,14 +75,14 @@ pub fn build(b: *std.build.Builder) void {
     switch (drv) {
         .sdl2 => {
             ngui.addCSourceFiles(lvgl_sdl2_src, &lvgl_flags);
-            ngui.addCSourceFile("src/ui/c/drv_sdl2.c", &ngui_cflags);
+            ngui.addCSourceFile(.{ .file = .{ .path = "src/ui/c/drv_sdl2.c" }, .flags = &ngui_cflags });
             ngui.defineCMacro("NM_DRV_SDL2", null);
             ngui.defineCMacro("USE_SDL", null);
             ngui.linkSystemLibrary("SDL2");
         },
         .fbev => {
             ngui.addCSourceFiles(lvgl_fbev_src, &lvgl_flags);
-            ngui.addCSourceFile("src/ui/c/drv_fbev.c", &ngui_cflags);
+            ngui.addCSourceFile(.{ .file = .{ .path = "src/ui/c/drv_fbev.c" }, .flags = &ngui_cflags });
             ngui.defineCMacro("NM_DRV_FBEV", null);
             ngui.defineCMacro("USE_FBDEV", null);
             ngui.defineCMacro("USE_EVDEV", null);
@@ -83,68 +90,77 @@ pub fn build(b: *std.build.Builder) void {
     }
 
     const ngui_build_step = b.step("ngui", "build ngui (nakamochi gui)");
-    ngui_build_step.dependOn(&b.addInstallArtifact(ngui).step);
+    ngui_build_step.dependOn(&b.addInstallArtifact(ngui, .{}).step);
 
     // daemon build
-    const nd = b.addExecutable("nd", "src/nd.zig");
-    nd.setTarget(target);
-    nd.setBuildMode(mode);
+    const nd = b.addExecutable(.{
+        .name = "nd",
+        .root_source_file = .{ .path = "src/nd.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
     nd.pie = true;
     nd.strip = strip;
-    nd.step.dependOn(semver_step);
-
-    nd.addPackage(buildopts.getPackage("build_options"));
-    nifbuild.addPkg(b, nd, "lib/nif");
-    const niflib = nifbuild.library(b, "lib/nif");
-    niflib.setTarget(target);
-    niflib.setBuildMode(mode);
-    nd.linkLibrary(niflib);
+    nd.addOptions("build_options", buildopts);
+    nd.addModule("nif", libnif_dep.module("nif"));
+    nd.linkLibrary(libnif);
 
     const nd_build_step = b.step("nd", "build nd (nakamochi daemon)");
-    nd_build_step.dependOn(&b.addInstallArtifact(nd).step);
+    nd_build_step.dependOn(&b.addInstallArtifact(nd, .{}).step);
 
-    // default build
-    const build_all_step = b.step("all", "build nd and ngui");
-    build_all_step.dependOn(ngui_build_step);
-    build_all_step.dependOn(nd_build_step);
-    b.default_step.dependOn(build_all_step);
-
+    // automated tests
     {
-        const tests = b.addTest("src/test.zig");
-        tests.setTarget(target);
-        tests.setBuildMode(mode);
-        tests.linkLibC();
-        tests.addPackage(buildopts.getPackage("build_options"));
-        nifbuild.addPkg(b, tests, "lib/nif");
+        const tests = b.addTest(.{
+            .root_source_file = .{ .path = "src/test.zig" },
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .filter = b.option([]const u8, "test-filter", "run tests matching the filter"),
+        });
+        tests.addOptions("build_options", buildopts);
+        tests.addModule("nif", libnif_dep.module("nif"));
+        tests.linkLibrary(libnif);
 
-        const f = b.option([]const u8, "test-filter", "run tests matching the filter");
-        tests.setFilter(f);
-
+        const run_tests = b.addRunArtifact(tests);
         const test_step = b.step("test", "run tests");
-        test_step.dependOn(&tests.step);
+        test_step.dependOn(&run_tests.step);
     }
 
+    // GUI playground
     {
-        const guiplay = b.addExecutable("guiplay", "src/test/guiplay.zig");
-        guiplay.setTarget(target);
-        guiplay.setBuildMode(mode);
-        guiplay.step.dependOn(semver_step);
-        guiplay.addPackagePath("comm", "src/comm.zig");
+        const guiplay = b.addExecutable(.{
+            .name = "guiplay",
+            .root_source_file = .{ .path = "src/test/guiplay.zig" },
+            .target = target,
+            .optimize = optimize,
+        });
+        guiplay.addModule("comm", b.createModule(.{ .source_file = .{ .path = "src/comm.zig" } }));
 
         const guiplay_build_step = b.step("guiplay", "build GUI playground");
-        guiplay_build_step.dependOn(&b.addInstallArtifact(guiplay).step);
+        guiplay_build_step.dependOn(&b.addInstallArtifact(guiplay, .{}).step);
         guiplay_build_step.dependOn(ngui_build_step);
     }
 
+    // bitcoind RPC client playground
     {
-        const btcrpc = b.addExecutable("btcrpc", "src/test/btcrpc.zig");
-        btcrpc.setTarget(target);
-        btcrpc.setBuildMode(mode);
+        const btcrpc = b.addExecutable(.{
+            .name = "btcrpc",
+            .root_source_file = .{ .path = "src/test/btcrpc.zig" },
+            .target = target,
+            .optimize = optimize,
+        });
         btcrpc.strip = strip;
-        btcrpc.addPackagePath("bitcoindrpc", "src/nd/bitcoindrpc.zig");
+        btcrpc.addModule("bitcoindrpc", b.createModule(.{ .source_file = .{ .path = "src/nd/bitcoindrpc.zig" } }));
+
         const btcrpc_build_step = b.step("btcrpc", "bitcoind RPC client playground");
-        btcrpc_build_step.dependOn(&b.addInstallArtifact(btcrpc).step);
+        btcrpc_build_step.dependOn(&b.addInstallArtifact(btcrpc, .{}).step);
     }
+
+    // default build step
+    const build_all_step = b.step("all", "build nd and ngui (default step)");
+    build_all_step.dependOn(ngui_build_step);
+    build_all_step.dependOn(nd_build_step);
+    b.default_step.dependOn(build_all_step);
 }
 
 const DriverTarget = enum {
@@ -354,23 +370,28 @@ const LVGLLogLevel = enum {
 /// git tag is found.
 const VersionStep = struct {
     inver: ?[]const u8, // input version in std.SemanticVersion.parse format
-    buildopts: *std.build.OptionsStep, // where to store the build version
+    buildopts: *std.Build.Step.Options, // where to store the build version
 
-    b: *std.build.Builder,
-    step: std.build.Step,
+    b: *std.Build,
+    step: std.Build.Step,
 
-    fn create(b: *std.build.Builder, o: *std.build.OptionsStep, inver: ?[]const u8) *std.build.Step {
+    fn create(b: *std.Build, o: *std.Build.Step.Options, inver: ?[]const u8) *std.Build.Step {
         const vstep = b.allocator.create(VersionStep) catch unreachable;
         vstep.* = VersionStep{
             .inver = inver,
             .buildopts = o,
             .b = b,
-            .step = std.build.Step.init(.custom, "VersionStep: ndg semver", b.allocator, make),
+            .step = std.Build.Step.init(.{
+                .id = .custom,
+                .name = "VersionStep: ndg semver",
+                .owner = b,
+                .makeFn = make,
+            }),
         };
         return &vstep.step;
     }
 
-    fn make(step: *std.build.Step) anyerror!void {
+    fn make(step: *std.Build.Step, _: *std.Progress.Node) anyerror!void {
         const self = @fieldParentPtr(VersionStep, "step", step);
         const semver = try self.eval();
         std.log.info("build version: {any}", .{semver});

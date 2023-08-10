@@ -10,12 +10,6 @@ const lvgl = @import("ui/lvgl.zig");
 const screen = @import("ui/screen.zig");
 const symbol = @import("ui/symbol.zig");
 
-/// SIGPIPE is triggered when a process attempts to write to a broken pipe.
-/// by default, SIGPIPE terminates the process without invoking a panic handler.
-/// this declaration makes such writes result in EPIPE (error.BrokenPipe) to let
-/// the program can handle it.
-pub const keep_sigpipe = true;
-
 const logger = std.log.scoped(.ngui);
 
 // these are auto-closed as soon as main fn terminates.
@@ -46,39 +40,40 @@ var state: enum {
 /// while deinit and replace handle concurrency, field access requires holding mu.
 var last_report: struct {
     mu: std.Thread.Mutex = .{},
-    network: ?comm.Message.NetworkReport = null,
-    bitcoind: ?comm.Message.BitcoindReport = null,
+    network: ?comm.ParsedMessage = null, // NetworkReport
+    bitcoind: ?comm.ParsedMessage = null, // BitcoinReport
 
     fn deinit(self: *@This()) void {
         self.mu.lock();
         defer self.mu.unlock();
         if (self.network) |v| {
-            comm.free(gpa, .{ .network_report = v });
+            v.deinit();
             self.network = null;
         }
         if (self.bitcoind) |v| {
-            comm.free(gpa, .{ .bitcoind_report = v });
+            v.deinit();
             self.bitcoind = null;
         }
     }
 
-    fn replace(self: *@This(), new: anytype) void {
+    fn replace(self: *@This(), new: comm.ParsedMessage) void {
         self.mu.lock();
         defer self.mu.unlock();
-        switch (@TypeOf(new)) {
-            comm.Message.NetworkReport => {
+        const tag: comm.MessageTag = new.value;
+        switch (tag) {
+            .network_report => {
                 if (self.network) |old| {
-                    comm.free(gpa, .{ .network_report = old });
+                    old.deinit();
                 }
                 self.network = new;
             },
-            comm.Message.BitcoindReport => {
+            .bitcoind_report => {
                 if (self.bitcoind) |old| {
-                    comm.free(gpa, .{ .bitcoind_report = old });
+                    old.deinit();
                 }
                 self.bitcoind = new;
             },
-            else => @compileError("unhandled type: " ++ @typeName(@TypeOf(new))),
+            else => |t| logger.err("last_report: replace: unhandled tag {}", .{t}),
         }
     }
 } = .{};
@@ -103,9 +98,9 @@ export fn nm_get_curr_tick() u32 {
     const ms = tick_timer.read() / time.ns_per_ms;
     const over = ms >> 32;
     if (over > 0) {
-        return @truncate(u32, over); // LVGL deals with overflow correctly
+        return @truncate(over); // LVGL deals with overflow correctly
     }
-    return @truncate(u32, ms);
+    return @truncate(ms);
 }
 
 export fn nm_check_idle_time(_: *lvgl.LvTimer) void {
@@ -223,27 +218,27 @@ fn commThreadLoopCycle() !void {
     ui_mutex.lock(); // guards the state and all UI calls below
     defer ui_mutex.unlock();
     switch (state) {
-        .standby => switch (msg) {
+        .standby => switch (msg.value) {
             .ping => try comm.write(gpa, stdout, comm.Message.pong),
-            .network_report => |v| last_report.replace(v),
-            .bitcoind_report => |v| last_report.replace(v),
-            else => logger.debug("ignoring {s}: in standby", .{@tagName(msg)}),
+            .network_report => last_report.replace(msg),
+            .bitcoind_report => last_report.replace(msg),
+            else => logger.debug("ignoring {s}: in standby", .{@tagName(msg.value)}),
         },
-        .active, .alert => switch (msg) {
+        .active, .alert => switch (msg.value) {
             .ping => try comm.write(gpa, stdout, comm.Message.pong),
             .poweroff_progress => |rep| {
                 ui.poweroff.updateStatus(rep) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
-                comm.free(gpa, msg);
+                msg.deinit();
             },
             .network_report => |rep| {
                 updateNetworkStatus(rep) catch |err| logger.err("updateNetworkStatus: {any}", .{err});
-                last_report.replace(rep);
+                last_report.replace(msg);
             },
             .bitcoind_report => |rep| {
                 ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
-                last_report.replace(rep);
+                last_report.replace(msg);
             },
-            else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
+            else => logger.warn("unhandled msg tag {s}", .{@tagName(msg.value)}),
         },
     }
 }
@@ -281,11 +276,15 @@ fn uiThreadLoop() void {
 
                     last_report.mu.lock();
                     defer last_report.mu.unlock();
-                    if (last_report.network) |rep| {
-                        updateNetworkStatus(rep) catch |err| logger.err("updateNetworkStatus: {any}", .{err});
+                    if (last_report.network) |msg| {
+                        updateNetworkStatus(msg.value.network_report) catch |err| {
+                            logger.err("updateNetworkStatus: {any}", .{err});
+                        };
                     }
-                    if (last_report.bitcoind) |rep| {
-                        ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
+                    if (last_report.bitcoind) |msg| {
+                        ui.bitcoin.updateTabPanel(msg.value.bitcoind_report) catch |err| {
+                            logger.err("bitcoin.updateTabPanel: {any}", .{err});
+                        };
                     }
                 }
                 continue;
@@ -342,7 +341,7 @@ fn sighandler(sig: c_int) callconv(.C) void {
 pub fn main() anyerror!void {
     // main heap allocator used through the lifetime of nd
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa_state.deinit()) {
+    defer if (gpa_state.deinit() == .leak) {
         logger.err("memory leaks detected", .{});
     };
     gpa = gpa_state.allocator();

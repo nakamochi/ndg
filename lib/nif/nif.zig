@@ -46,7 +46,7 @@ pub fn pubAddresses(allocator: mem.Allocator, ifname: ?[]const u8) ![]net.Addres
             // skip loopbacks and those which are not "up"
             continue;
         }
-        const ipaddr = net.Address.initPosix(@alignCast(4, sa)); // initPosix makes a copy
+        const ipaddr = net.Address.initPosix(@alignCast(sa)); // initPosix makes a copy
         if (ipaddr.any.family == os.AF.INET6 and ipaddr.in6.sa.scope_id > 0) {
             // want only global, with 0 scope
             // non-zero scopes make sense for link-local addr only.

@@ -203,7 +203,7 @@ pub const LvStyle = opaque {
 
         /// produces an int value suitable for lv_xxx functions.
         fn value(self: Selector) c.lv_style_selector_t {
-            return @enumToInt(self.part) | @enumToInt(self.state);
+            return @intFromEnum(self.part) | @intFromEnum(self.state);
         }
     };
 };
@@ -249,11 +249,11 @@ const RGB16 = packed struct {
 /// rgb produces a Color value base on the red, green and blue components.
 pub inline fn rgb(r: u8, g: u8, b: u8) Color {
     const c16 = RGB16{
-        .b = @truncate(u5, b >> 3),
-        .g = @truncate(u6, g >> 2),
-        .r = @truncate(u5, r >> 3),
+        .b = @truncate(b >> 3),
+        .g = @truncate(g >> 2),
+        .r = @truncate(r >> 3),
     };
-    return @bitCast(Color, c16);
+    return @bitCast(c16);
 }
 
 /// black color
@@ -295,19 +295,19 @@ pub const Palette = enum(c.lv_palette_t) {
 
     /// returns main color from the predefined palette.
     pub inline fn main(p: Palette) Color {
-        return lv_palette_main(@enumToInt(p));
+        return lv_palette_main(@intFromEnum(p));
     }
 
     /// makes the main color from the predefined palette lighter according to the
     /// specified level.
     pub inline fn lighten(p: Palette, l: ModLevel) Color {
-        return lv_palette_lighten(@enumToInt(p), @enumToInt(l));
+        return lv_palette_lighten(@intFromEnum(p), @intFromEnum(l));
     }
 
     /// makes the main color from the predefined palette darker according to the
     /// specified level.
     pub inline fn darken(p: Palette, l: ModLevel) Color {
-        return lv_palette_darken(@enumToInt(p), @enumToInt(l));
+        return lv_palette_darken(@intFromEnum(p), @intFromEnum(l));
     }
 };
 
@@ -326,16 +326,16 @@ pub const BaseObjMethods = struct {
 
     /// sets or clears an object flag.
     pub fn setFlag(self: anytype, v: LvObj.Flag) void {
-        lv_obj_add_flag(self.lvobj, @enumToInt(v));
+        lv_obj_add_flag(self.lvobj, @intFromEnum(v));
     }
 
     pub fn clearFlag(self: anytype, v: LvObj.Flag) void {
-        lv_obj_clear_flag(self.lvobj, @enumToInt(v));
+        lv_obj_clear_flag(self.lvobj, @intFromEnum(v));
     }
 
     /// reports whether the object has v flag set.
     pub fn hasFlag(self: anytype, v: LvObj.Flag) bool {
-        return lv_obj_has_flag(self.lvobj, @enumToInt(v));
+        return lv_obj_has_flag(self.lvobj, @intFromEnum(v));
     }
 
     /// returns a user data pointer associated with the object.
@@ -409,7 +409,7 @@ pub const WidgetMethods = struct {
 
     /// aligns object position. the offset is relative to the specified alignment a.
     pub fn posAlign(self: anytype, a: PosAlign, xoffset: Coord, yoffset: Coord) void {
-        lv_obj_align(self.lvobj, @enumToInt(a), xoffset, yoffset);
+        lv_obj_align(self.lvobj, @intFromEnum(a), xoffset, yoffset);
     }
 
     /// sets flex layout growth property; same meaning as in CSS flex.
@@ -548,24 +548,24 @@ pub const FlexLayout = struct {
     }
 
     fn adopt(obj: *LvObj, flow: Flow, opt: AlignOpt) FlexLayout {
-        lv_obj_set_flex_flow(obj, @enumToInt(flow));
+        lv_obj_set_flex_flow(obj, @intFromEnum(flow));
         if (opt.all) |a| {
-            const v = @enumToInt(a);
+            const v = @intFromEnum(a);
             lv_obj_set_flex_align(obj, v, v, v);
         } else {
-            lv_obj_set_flex_align(obj, @enumToInt(opt.main), @enumToInt(opt.cross), @enumToInt(opt.track));
+            lv_obj_set_flex_align(obj, @intFromEnum(opt.main), @intFromEnum(opt.cross), @intFromEnum(opt.track));
         }
         return .{ .lvobj = obj };
     }
 
     /// sets flex layout flow on the object.
     pub fn setFlow(self: FlexLayout, ff: Flow) void {
-        lv_obj_set_flex_flow(self.lvobj, @enumToInt(ff));
+        lv_obj_set_flex_flow(self.lvobj, @intFromEnum(ff));
     }
 
     /// sets flex layout alignments.
     pub fn setAlign(self: FlexLayout, main: Align, cross: AlignCross, track: Align) void {
-        lv_obj_set_flex_align(self.lvobj, @enumToInt(main), @enumToInt(cross), @enumToInt(track));
+        lv_obj_set_flex_align(self.lvobj, @intFromEnum(main), @intFromEnum(cross), @intFromEnum(track));
     }
 
     /// same as setPad .column but using a default constant to make flex layouts consistent.
@@ -645,10 +645,10 @@ pub const Label = struct {
         lv_label_set_text(lv_label, text);
         //lv_obj_set_height(lb, sizeContent); // default
         if (opt.long_mode) |m| {
-            lv_label_set_long_mode(lv_label, @enumToInt(m));
+            lv_label_set_long_mode(lv_label, @intFromEnum(m));
         }
         if (opt.pos) |p| {
-            lv_obj_align(lv_label, @enumToInt(p), 0, 0);
+            lv_obj_align(lv_label, @intFromEnum(p), 0, 0);
         }
         if (opt.recolor) {
             lv_label_set_recolor(lv_label, true);
