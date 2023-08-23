@@ -21,6 +21,7 @@ const screen = @import("../ui/screen.zig");
 const types = @import("../types.zig");
 const SysService = @import("SysService.zig");
 const bitcoindrpc = @import("bitcoindrpc.zig");
+const lndhttp = @import("../lndhttp.zig");
 
 const logger = std.log.scoped(.daemon);
 
@@ -55,6 +56,10 @@ wpa_save_config_on_connected: bool = false,
 want_bitcoind_report: bool,
 bitcoin_timer: time.Timer,
 bitcoin_report_interval: u64 = 1 * time.ns_per_min,
+// lightning flags
+want_lnd_report: bool,
+lnd_timer: time.Timer,
+lnd_report_interval: u64 = 1 * time.ns_per_min,
 
 /// system services actively managed by the daemon.
 /// these are stop'ed during poweroff and their shutdown progress sent to ngui.
@@ -90,6 +95,9 @@ pub fn init(a: std.mem.Allocator, r: std.fs.File.Reader, w: std.fs.File.Writer, 
         // report bitcoind status immediately on start
         .want_bitcoind_report = true,
         .bitcoin_timer = try time.Timer.start(),
+        // report lightning status immediately on start
+        .want_lnd_report = true,
+        .lnd_timer = try time.Timer.start(),
     };
 }
 
@@ -283,6 +291,14 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
             self.want_bitcoind_report = false;
         } else |err| {
             logger.err("sendBitcoinReport: {any}", .{err});
+        }
+    }
+    if (self.want_lnd_report or self.lnd_timer.read() > self.lnd_report_interval) {
+        if (self.sendLightningReport()) {
+            self.lnd_timer.reset();
+            self.want_lnd_report = false;
+        } else |err| {
+            logger.err("sendLightningReport: {any}", .{err});
         }
     }
 }
@@ -543,6 +559,148 @@ fn sendBitcoindReport(self: *Daemon) !void {
     try comm.write(self.allocator, self.uiwriter, .{ .bitcoind_report = btcrep });
 }
 
+fn sendLightningReport(self: *Daemon) !void {
+    var client = try lndhttp.Client.init(.{
+        .allocator = self.allocator,
+        .tlscert_path = "/home/lnd/.lnd/tls.cert",
+        .macaroon_ro_path = "/ssd/lnd/data/chain/bitcoin/mainnet/readonly.macaroon",
+    });
+    defer client.deinit();
+
+    const info = try client.call(.getinfo, {});
+    defer info.deinit();
+    const feerep = try client.call(.feereport, {});
+    defer feerep.deinit();
+    const chanlist = try client.call(.listchannels, .{ .peer_alias_lookup = true });
+    defer chanlist.deinit();
+    const pending = try client.call(.pendingchannels, {});
+    defer pending.deinit();
+
+    var lndrep = comm.Message.LightningReport{
+        .version = info.value.version,
+        .pubkey = info.value.identity_pubkey,
+        .alias = info.value.alias,
+        .npeers = info.value.num_peers,
+        .height = info.value.block_height,
+        .hash = info.value.block_hash,
+        .sync = .{
+            .chain = info.value.synced_to_chain,
+            .graph = info.value.synced_to_graph,
+        },
+        .uris = &.{}, // TODO: dedup info.uris
+        .totalbalance = .{
+            .local = 0, // available; computed below
+            .remote = 0, // available; computed below
+            .unsettled = 0, // computed below
+            .pending = pending.value.total_limbo_balance,
+        },
+        .totalfees = .{
+            .day = feerep.value.day_fee_sum,
+            .week = feerep.value.week_fee_sum,
+            .month = feerep.value.month_fee_sum,
+        },
+        .channels = undefined, // populated below
+    };
+
+    var feemap = std.StringHashMap(struct { base: i64, ppm: i64 }).init(self.allocator);
+    defer feemap.deinit();
+    for (feerep.value.channel_fees) |item| {
+        try feemap.put(item.chan_id, .{ .base = item.base_fee_msat, .ppm = item.fee_per_mil });
+    }
+
+    var channels = std.ArrayList(@typeInfo(@TypeOf(lndrep.channels)).Pointer.child).init(self.allocator);
+    defer channels.deinit();
+    for (pending.value.pending_open_channels) |item| {
+        try channels.append(.{
+            .id = null,
+            .state = .pending_open,
+            .private = item.channel.private,
+            .point = item.channel.channel_point,
+            .closetxid = null,
+            .peer_pubkey = item.channel.remote_node_pub,
+            .peer_alias = "", // TODO: a cached getnodeinfo?
+            .capacity = item.channel.capacity,
+            .balance = .{
+                .local = item.channel.local_balance,
+                .remote = item.channel.remote_balance,
+                .unsettled = 0,
+                .limbo = 0,
+            },
+            .totalsats = .{ .sent = 0, .received = 0 },
+            .fees = .{ .base = 0, .ppm = 0 },
+        });
+    }
+    for (pending.value.waiting_close_channels) |item| {
+        try channels.append(.{
+            .id = null,
+            .state = .pending_close,
+            .private = item.channel.private,
+            .point = item.channel.channel_point,
+            .closetxid = item.closing_txid,
+            .peer_pubkey = item.channel.remote_node_pub,
+            .peer_alias = "", // TODO: a cached getnodeinfo?
+            .capacity = item.channel.capacity,
+            .balance = .{
+                .local = item.channel.local_balance,
+                .remote = item.channel.remote_balance,
+                .unsettled = 0,
+                .limbo = item.limbo_balance,
+            },
+            .totalsats = .{ .sent = 0, .received = 0 },
+            .fees = .{ .base = 0, .ppm = 0 },
+        });
+    }
+    for (pending.value.pending_force_closing_channels) |item| {
+        try channels.append(.{
+            .id = null,
+            .state = .pending_close,
+            .private = item.channel.private,
+            .point = item.channel.channel_point,
+            .closetxid = item.closing_txid,
+            .peer_pubkey = item.channel.remote_node_pub,
+            .peer_alias = "", // TODO: a cached getnodeinfo?
+            .capacity = item.channel.capacity,
+            .balance = .{
+                .local = item.channel.local_balance,
+                .remote = item.channel.remote_balance,
+                .unsettled = 0,
+                .limbo = item.limbo_balance,
+            },
+            .totalsats = .{ .sent = 0, .received = 0 },
+            .fees = .{ .base = 0, .ppm = 0 },
+        });
+    }
+    for (chanlist.value.channels) |ch| {
+        lndrep.totalbalance.local += ch.local_balance;
+        lndrep.totalbalance.remote += ch.remote_balance;
+        lndrep.totalbalance.unsettled += ch.unsettled_balance;
+        try channels.append(.{
+            .id = ch.chan_id,
+            .state = if (ch.active) .active else .inactive,
+            .private = ch.private,
+            .point = ch.channel_point,
+            .closetxid = null,
+            .peer_pubkey = ch.remote_pubkey,
+            .peer_alias = ch.peer_alias,
+            .capacity = ch.capacity,
+            .balance = .{
+                .local = ch.local_balance,
+                .remote = ch.remote_balance,
+                .unsettled = ch.unsettled_balance,
+                .limbo = 0,
+            },
+            .totalsats = .{
+                .sent = ch.total_satoshis_sent,
+                .received = ch.total_satoshis_received,
+            },
+            .fees = if (feemap.get(ch.chan_id)) |v| .{ .base = v.base, .ppm = v.ppm } else .{ .base = 0, .ppm = 0 },
+        });
+    }
+
+    lndrep.channels = channels.items;
+    try comm.write(self.allocator, self.uiwriter, .{ .lightning_report = lndrep });
+}
+
 test "start-stop" {
     const t = std.testing;
 
@@ -550,6 +708,7 @@ test "start-stop" {
     var daemon = try Daemon.init(t.allocator, pipe.reader(), pipe.writer(), "/dev/null");
     daemon.want_network_report = false;
     daemon.want_bitcoind_report = false;
+    daemon.want_lnd_report = false;
 
     try t.expect(daemon.state == .stopped);
     try daemon.start();
@@ -594,6 +753,7 @@ test "start-poweroff" {
     var daemon = try Daemon.init(arena, gui_stdout.reader(), gui_stdin.writer(), "/dev/null");
     daemon.want_network_report = false;
     daemon.want_bitcoind_report = false;
+    daemon.want_lnd_report = false;
     defer {
         daemon.deinit();
         gui_stdin.close();

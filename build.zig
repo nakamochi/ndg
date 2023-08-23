@@ -156,6 +156,21 @@ pub fn build(b: *std.Build) void {
         btcrpc_build_step.dependOn(&b.addInstallArtifact(btcrpc, .{}).step);
     }
 
+    // lnd HTTP API client playground
+    {
+        const lndhc = b.addExecutable(.{
+            .name = "lndhc",
+            .root_source_file = .{ .path = "src/test/lndhc.zig" },
+            .target = target,
+            .optimize = optimize,
+        });
+        lndhc.strip = strip;
+        lndhc.addModule("lndhttp", b.createModule(.{ .source_file = .{ .path = "src/lndhttp.zig" } }));
+
+        const lndhc_build_step = b.step("lndhc", "lnd HTTP API client playground");
+        lndhc_build_step.dependOn(&b.addInstallArtifact(lndhc, .{}).step);
+    }
+
     // default build step
     const build_all_step = b.step("all", "build nd and ngui (default step)");
     build_all_step.dependOn(ngui_build_step);

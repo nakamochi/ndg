@@ -79,3 +79,27 @@ pub const StringList = struct {
         return self.l.items;
     }
 };
+
+pub fn Deinitable(comptime T: type) type {
+    return struct {
+        value: T,
+        arena: *std.heap.ArenaAllocator,
+
+        const Self = @This();
+
+        pub fn init(allocator: std.mem.Allocator) !Self {
+            var res = Self{
+                .arena = try allocator.create(std.heap.ArenaAllocator),
+                .value = undefined,
+            };
+            res.arena.* = std.heap.ArenaAllocator.init(allocator);
+            return res;
+        }
+
+        pub fn deinit(self: Self) void {
+            const allocator = self.arena.child_allocator;
+            self.arena.deinit();
+            allocator.destroy(self.arena);
+        }
+    };
+}

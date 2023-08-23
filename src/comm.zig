@@ -28,6 +28,7 @@ pub const Message = union(MessageTag) {
     get_network_report: GetNetworkReport,
     poweroff_progress: PoweroffProgress,
     bitcoind_report: BitcoindReport,
+    lightning_report: LightningReport,
 
     pub const WifiConnect = struct {
         ssid: []const u8,
@@ -81,6 +82,38 @@ pub const Message = union(MessageTag) {
             fullrbf: bool,
         },
     };
+
+    pub const LightningReport = struct {
+        version: []const u8,
+        pubkey: []const u8,
+        alias: []const u8,
+        npeers: u32,
+        height: u32,
+        hash: []const u8,
+        sync: struct { chain: bool, graph: bool },
+        uris: []const []const u8,
+        /// only lightning channels balance is reported here
+        totalbalance: struct { local: i64, remote: i64, unsettled: i64, pending: i64 },
+        totalfees: struct { day: u64, week: u64, month: u64 }, // sats
+        channels: []const struct {
+            id: ?[]const u8 = null, // null for pending_xxx state
+            state: enum { active, inactive, pending_open, pending_close },
+            private: bool,
+            point: []const u8, // funding txid:index
+            closetxid: ?[]const u8 = null, // non-null for pending_close
+            peer_pubkey: []const u8,
+            peer_alias: []const u8,
+            capacity: i64,
+            balance: struct { local: i64, remote: i64, unsettled: i64, limbo: i64 },
+            totalsats: struct { sent: i64, received: i64 },
+            fees: struct {
+                base: i64, // msat
+                ppm: i64, // per milli-satoshis, in millionths of satoshi
+                // TODO: remote base and ppm from getchaninfo
+                // https://docs.lightning.engineering/lightning-network-tools/lnd/channel-fees
+            },
+        },
+    };
 };
 
 /// it is important to preserve ordinal values for future compatiblity,
@@ -100,7 +133,9 @@ pub const MessageTag = enum(u16) {
     poweroff_progress = 0x09,
     // nd -> ngui: bitcoin core daemon status report
     bitcoind_report = 0x0a,
-    // next: 0x0b
+    // nd -> ngui: lnd status and stats report
+    lightning_report = 0x0b,
+    // next: 0x0c
 };
 
 /// the return value type from `read` fn.
@@ -173,6 +208,7 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
         .get_network_report => try json.stringify(msg.get_network_report, .{}, data.writer()),
         .poweroff_progress => try json.stringify(msg.poweroff_progress, .{}, data.writer()),
         .bitcoind_report => try json.stringify(msg.bitcoind_report, .{}, data.writer()),
+        .lightning_report => try json.stringify(msg.lightning_report, .{}, data.writer()),
     }
     if (data.items.len > std.math.maxInt(u64)) {
         return Error.CommWriteTooLarge;
