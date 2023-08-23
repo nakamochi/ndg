@@ -42,6 +42,7 @@ var last_report: struct {
     mu: std.Thread.Mutex = .{},
     network: ?comm.ParsedMessage = null, // NetworkReport
     bitcoind: ?comm.ParsedMessage = null, // BitcoinReport
+    lightning: ?comm.ParsedMessage = null, // LightningReport
 
     fn deinit(self: *@This()) void {
         self.mu.lock();
@@ -53,6 +54,10 @@ var last_report: struct {
         if (self.bitcoind) |v| {
             v.deinit();
             self.bitcoind = null;
+        }
+        if (self.lightning) |v| {
+            v.deinit();
+            self.lightning = null;
         }
     }
 
@@ -72,6 +77,12 @@ var last_report: struct {
                     old.deinit();
                 }
                 self.bitcoind = new;
+            },
+            .lightning_report => {
+                if (self.lightning) |old| {
+                    old.deinit();
+                }
+                self.lightning = new;
             },
             else => |t| logger.err("last_report: replace: unhandled tag {}", .{t}),
         }
@@ -220,8 +231,10 @@ fn commThreadLoopCycle() !void {
     switch (state) {
         .standby => switch (msg.value) {
             .ping => try comm.write(gpa, stdout, comm.Message.pong),
-            .network_report => last_report.replace(msg),
-            .bitcoind_report => last_report.replace(msg),
+            .network_report,
+            .bitcoind_report,
+            .lightning_report,
+            => last_report.replace(msg),
             else => logger.debug("ignoring {s}: in standby", .{@tagName(msg.value)}),
         },
         .active, .alert => switch (msg.value) {
@@ -236,6 +249,10 @@ fn commThreadLoopCycle() !void {
             },
             .bitcoind_report => |rep| {
                 ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
+                last_report.replace(msg);
+            },
+            .lightning_report => |rep| {
+                ui.lightning.updateTabPanel(rep) catch |err| logger.err("lightning.updateTabPanel: {any}", .{err});
                 last_report.replace(msg);
             },
             else => logger.warn("unhandled msg tag {s}", .{@tagName(msg.value)}),

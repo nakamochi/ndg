@@ -8,6 +8,7 @@ const symbol = @import("symbol.zig");
 const widget = @import("widget.zig");
 pub const poweroff = @import("poweroff.zig");
 pub const bitcoin = @import("bitcoin.zig");
+pub const lightning = @import("lightning.zig");
 
 const logger = std.log.scoped(.ui);
 
@@ -38,6 +39,14 @@ export fn nm_create_info_panel(parent: *lvgl.LvObj) c_int {
 export fn nm_create_bitcoin_panel(parent: *lvgl.LvObj) c_int {
     bitcoin.initTabPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
         logger.err("createBitcoinPanel: {any}", .{err});
+        return -1;
+    };
+    return 0;
+}
+
+export fn nm_create_lightning_panel(parent: *lvgl.LvObj) c_int {
+    lightning.initTabPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
+        logger.err("createLightningPanel: {any}", .{err});
         return -1;
     };
     return 0;

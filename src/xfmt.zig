@@ -8,6 +8,16 @@ pub fn unix(sec: u64) std.fmt.Formatter(formatUnix) {
     return .{ .data = sec };
 }
 
+/// returns a metric formatter, outputting the value with SI unit suffix.
+pub fn imetric(val: i64) std.fmt.Formatter(formatMetricI) {
+    return .{ .data = val };
+}
+
+/// returns a metric formatter, outputting the value with SI unit suffix.
+pub fn umetric(val: u64) std.fmt.Formatter(formatMetricU) {
+    return .{ .data = val };
+}
+
 fn formatUnix(sec: u64, comptime fmt: []const u8, opts: std.fmt.FormatOptions, w: anytype) !void {
     _ = fmt; // unused
     _ = opts;
@@ -28,4 +38,34 @@ fn formatUnix(sec: u64, comptime fmt: []const u8, opts: std.fmt.FormatOptions, w
         daysec.getMinutesIntoHour(),
         daysec.getSecondsIntoMinute(),
     });
+}
+
+fn formatMetricI(value: i64, comptime fmt: []const u8, opts: std.fmt.FormatOptions, w: anytype) !void {
+    const uval: u64 = std.math.absCast(value);
+    const base: u64 = 1000;
+    if (uval < base) {
+        return std.fmt.formatIntValue(value, fmt, opts, w);
+    }
+
+    if (value < 0) {
+        try w.writeByte('-');
+    }
+    return formatMetricU(uval, fmt, opts, w);
+}
+
+/// based on `std.fmt.fmtIntSizeDec`.
+fn formatMetricU(value: u64, comptime fmt: []const u8, opts: std.fmt.FormatOptions, w: anytype) !void {
+    const lossyCast = std.math.lossyCast;
+    const base: u64 = 1000;
+    if (value < base) {
+        return std.fmt.formatIntValue(value, fmt, opts, w);
+    }
+
+    const mags_si = " kMGTPEZY";
+    const log2 = std.math.log2(value);
+    const m = @min(log2 / comptime std.math.log2(base), mags_si.len - 1);
+    const newval = lossyCast(f64, value) / std.math.pow(f64, lossyCast(f64, base), lossyCast(f64, m));
+    const suffix = mags_si[m];
+    try std.fmt.formatFloatDecimal(newval, opts, w);
+    try w.writeByte(suffix);
 }

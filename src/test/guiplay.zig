@@ -128,7 +128,7 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
 
 fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
     var sectimer = try time.Timer.start();
-    var block_count: u64 = 801365;
+    var block_count: u32 = 801365;
 
     while (true) {
         time.sleep(time.ns_per_s);
@@ -164,6 +164,76 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
             },
         };
         comm.write(gpa, w, .{ .bitcoind_report = btcrep }) catch |err| logger.err("comm.write: {any}", .{err});
+
+        if (block_count % 2 == 0) {
+            const lndrep: comm.Message.LightningReport = .{
+                .version = "0.16.4-beta commit=v0.16.4-beta",
+                .pubkey = "142874abcdeadbeef8839bdfaf8439fac9b0327bf78acdee8928efbac982de822a",
+                .alias = "testnode",
+                .npeers = 15,
+                .height = block_count,
+                .hash = "00000000000000000002bf8029f6be4e40b4a3e0e161b6a1044ddaf9eb126504",
+                .sync = .{ .chain = true, .graph = true },
+                .uris = &.{}, // TODO
+                .totalbalance = .{ .local = 10123567, .remote = 4239870, .unsettled = 0, .pending = 430221 },
+                .totalfees = .{ .day = 13, .week = 132, .month = 1321 },
+                .channels = &.{
+                    .{
+                        .id = null,
+                        .state = .pending_open,
+                        .private = false,
+                        .point = "1b332afe982befbdcbadff33099743099eef00bcdbaef788320db328efeaa91b:0",
+                        .closetxid = null,
+                        .peer_pubkey = "def3829fbdeadbeef8839bdfaf8439fac9b0327bf78acdee8928efbac229aaabc2",
+                        .peer_alias = "chan-peer-alias1",
+                        .capacity = 900000,
+                        .balance = .{ .local = 1123456, .remote = 0, .unsettled = 0, .limbo = 0 },
+                        .totalsats = .{ .sent = 0, .received = 0 },
+                        .fees = .{ .base = 0, .ppm = 0 },
+                    },
+                    .{
+                        .id = null,
+                        .state = .pending_close,
+                        .private = false,
+                        .point = "932baef3982befbdcbadff33099743099eef00bcdbaef788320db328e82afdd7:0",
+                        .closetxid = "fe829832982befbdcbadff33099743099eef00bcdbaef788320db328eaffeb2b",
+                        .peer_pubkey = "01feba38fe8adbeef8839bdfaf8439fac9b0327bf78acdee8928efbac2abfec831",
+                        .peer_alias = "chan-peer-alias2",
+                        .capacity = 800000,
+                        .balance = .{ .local = 10000, .remote = 788000, .unsettled = 0, .limbo = 10000 },
+                        .totalsats = .{ .sent = 0, .received = 0 },
+                        .fees = .{ .base = 0, .ppm = 0 },
+                    },
+                    .{
+                        .id = "848352385882718209",
+                        .state = .active,
+                        .private = false,
+                        .point = "36277666abcbefbdcbadff33099743099eef00bcdbaef788320db328e828e00d:1",
+                        .closetxid = null,
+                        .peer_pubkey = "e7287abcfdeadbeef8839bdfaf8439fac9b0327bf78acdee8928efbac229acddbe",
+                        .peer_alias = "chan-peer-alias3",
+                        .capacity = 1000000,
+                        .balance = .{ .local = 1000000 / 2, .remote = 1000000 / 2, .unsettled = 0, .limbo = 0 },
+                        .totalsats = .{ .sent = 3287320, .received = 2187482 },
+                        .fees = .{ .base = 1000, .ppm = 400 },
+                    },
+                    .{
+                        .id = "134439885882718428",
+                        .state = .inactive,
+                        .private = false,
+                        .point = "abafe483982befbdcbadff33099743099eef00bcdbaef788320db328e828339c:0",
+                        .closetxid = null,
+                        .peer_pubkey = "20398287fdeadbeef8839bdfaf8439fac9b0327bf78acdee8928efbac229a03928",
+                        .peer_alias = "chan-peer-alias4",
+                        .capacity = 900000,
+                        .balance = .{ .local = 900000, .remote = 0, .unsettled = 0, .limbo = 0 },
+                        .totalsats = .{ .sent = 328732, .received = 2187482 },
+                        .fees = .{ .base = 1000, .ppm = 500 },
+                    },
+                },
+            };
+            comm.write(gpa, w, .{ .lightning_report = lndrep }) catch |err| logger.err("comm.write: {any}", .{err});
+        }
     }
 }
 
