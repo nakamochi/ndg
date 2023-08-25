@@ -5,6 +5,8 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const Atomic = std.atomic.Atomic;
 const base64enc = std.base64.standard.Encoder;
 
+const types = @import("types.zig");
+
 pub const Client = struct {
     allocator: std.mem.Allocator,
     cookiepath: []const u8,
@@ -55,7 +57,7 @@ pub const Client = struct {
     };
 
     pub fn Result(comptime m: Method) type {
-        return std.json.Parsed(ResultValue(m));
+        return types.Deinitable(ResultValue(m));
     }
 
     pub fn ResultValue(comptime m: Method) type {
@@ -133,9 +135,12 @@ pub const Client = struct {
     }
 
     fn parseResponse(self: Client, comptime m: Method, b: []const u8) !Result(m) {
-        const jopt = std.json.ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always };
-        const resp = try std.json.parseFromSlice(RpcResponse(m), self.allocator, b, jopt);
+        var resp = try types.Deinitable(RpcResponse(m)).init(self.allocator);
         errdefer resp.deinit();
+        resp.value = try std.json.parseFromSliceLeaky(RpcResponse(m), self.allocator, b, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        });
         if (resp.value.@"error") |errfield| {
             return rpcErrorFromCode(errfield.code) orelse error.UnknownError;
         }

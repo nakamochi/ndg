@@ -15,13 +15,13 @@ const std = @import("std");
 const mem = std.mem;
 const time = std.time;
 
+const bitcoindrpc = @import("../bitcoindrpc.zig");
 const comm = @import("../comm.zig");
+const lndhttp = @import("../lndhttp.zig");
 const network = @import("network.zig");
 const screen = @import("../ui/screen.zig");
-const types = @import("../types.zig");
 const SysService = @import("SysService.zig");
-const bitcoindrpc = @import("bitcoindrpc.zig");
-const lndhttp = @import("../lndhttp.zig");
+const types = @import("../types.zig");
 
 const logger = std.log.scoped(.daemon);
 
@@ -52,11 +52,11 @@ want_wifi_scan: bool, // initiate wifi scan at the next loop cycle
 network_report_ready: bool, // indicates whether the network status is ready to be sent
 wifi_scan_in_progress: bool = false,
 wpa_save_config_on_connected: bool = false,
-// bitcoin flags
+// bitcoin fields
 want_bitcoind_report: bool,
 bitcoin_timer: time.Timer,
 bitcoin_report_interval: u64 = 1 * time.ns_per_min,
-// lightning flags
+// lightning fields
 want_lnd_report: bool,
 lnd_timer: time.Timer,
 lnd_report_interval: u64 = 1 * time.ns_per_min,
@@ -530,7 +530,19 @@ fn sendBitcoindReport(self: *Daemon) !void {
     const mempool = try client.call(.getmempoolinfo, {});
     defer mempool.deinit();
 
-    const btcrep: comm.Message.BitcoindReport = .{
+    const balance: ?lndhttp.WalletBalance = blk: {
+        var lndc = lndhttp.Client.init(.{
+            .allocator = self.allocator,
+            .tlscert_path = "/home/lnd/.lnd/tls.cert",
+            .macaroon_ro_path = "/ssd/lnd/data/chain/bitcoin/mainnet/readonly.macaroon",
+        }) catch break :blk null;
+        defer lndc.deinit();
+        const res = lndc.call(.walletbalance, {}) catch break :blk null;
+        defer res.deinit();
+        break :blk res.value;
+    };
+
+    const btcrep: comm.Message.BitcoinReport = .{
         .blocks = bcinfo.value.blocks,
         .headers = bcinfo.value.headers,
         .timestamp = bcinfo.value.time,
@@ -554,6 +566,14 @@ fn sendBitcoindReport(self: *Daemon) !void {
             .minfee = mempool.value.mempoolminfee,
             .fullrbf = mempool.value.fullrbf,
         },
+        .balance = if (balance) |bal| .{
+            .source = .lnd,
+            .total = bal.total_balance,
+            .confirmed = bal.confirmed_balance,
+            .unconfirmed = bal.unconfirmed_balance,
+            .locked = bal.locked_balance,
+            .reserved = bal.reserved_balance_anchor_chan,
+        } else null,
     };
 
     try comm.write(self.allocator, self.uiwriter, .{ .bitcoind_report = btcrep });

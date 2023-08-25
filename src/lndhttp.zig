@@ -3,6 +3,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 
+/// safe for concurrent use as long as Client.allocator is.
 pub const Client = struct {
     allocator: std.mem.Allocator,
     hostname: []const u8 = "localhost",
@@ -307,6 +308,7 @@ pub const PendingChannel = struct {
     // local_chan_reserve_sat, remote_chan_reserve_sat, initiator, chan_status_flags, memo
 };
 
+/// on-chain balance, in satoshis.
 pub const WalletBalance = struct {
     total_balance: i64,
     confirmed_balance: i64,

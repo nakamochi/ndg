@@ -150,7 +150,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         btcrpc.strip = strip;
-        btcrpc.addModule("bitcoindrpc", b.createModule(.{ .source_file = .{ .path = "src/nd/bitcoindrpc.zig" } }));
+        btcrpc.addModule("bitcoindrpc", b.createModule(.{ .source_file = .{ .path = "src/bitcoindrpc.zig" } }));
 
         const btcrpc_build_step = b.step("btcrpc", "bitcoind RPC client playground");
         btcrpc_build_step.dependOn(&b.addInstallArtifact(btcrpc, .{}).step);

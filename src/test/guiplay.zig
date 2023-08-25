@@ -140,7 +140,7 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
         block_count += 1;
         const now = time.timestamp();
 
-        const btcrep: comm.Message.BitcoindReport = .{
+        const btcrep: comm.Message.BitcoinReport = .{
             .blocks = block_count,
             .headers = block_count,
             .timestamp = @intCast(now),
@@ -161,6 +161,14 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
                 .totalfee = 2.23049932,
                 .minfee = 0.00004155,
                 .fullrbf = false,
+            },
+            .balance = .{
+                .source = .lnd,
+                .total = 800000,
+                .confirmed = 350000,
+                .unconfirmed = 350000,
+                .locked = 0,
+                .reserved = 100000,
             },
         };
         comm.write(gpa, w, .{ .bitcoind_report = btcrep }) catch |err| logger.err("comm.write: {any}", .{err});

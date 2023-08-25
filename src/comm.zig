@@ -27,7 +27,7 @@ pub const Message = union(MessageTag) {
     network_report: NetworkReport,
     get_network_report: GetNetworkReport,
     poweroff_progress: PoweroffProgress,
-    bitcoind_report: BitcoindReport,
+    bitcoind_report: BitcoinReport,
     lightning_report: LightningReport,
 
     pub const WifiConnect = struct {
@@ -55,7 +55,7 @@ pub const Message = union(MessageTag) {
         };
     };
 
-    pub const BitcoindReport = struct {
+    pub const BitcoinReport = struct {
         blocks: u64,
         headers: u64,
         timestamp: u64, // unix epoch
@@ -81,6 +81,17 @@ pub const Message = union(MessageTag) {
             minfee: f32, // BTC/kvB
             fullrbf: bool,
         },
+        /// on-chain balance, all values in satoshis.
+        /// may not be available due to disabled wallet, if bitcoin core is used,
+        /// or lnd turned off/nonfunctional.
+        balance: ?struct {
+            source: enum { lnd, bitcoincore },
+            total: i64,
+            confirmed: i64,
+            unconfirmed: i64,
+            locked: i64, // output leases
+            reserved: i64, // for fee bumps
+        } = null,
     };
 
     pub const LightningReport = struct {
