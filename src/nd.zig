@@ -171,8 +171,10 @@ pub fn main() !void {
     // note: read(2) indicates file destriptor i/o is atomic linux since 3.14.
     const uireader = ngui.stdout.?.reader();
     const uiwriter = ngui.stdin.?.writer();
+    comm.initPipe(gpa, .{ .r = ngui.stdout.?, .w = ngui.stdin.? });
+
     // send UI a ping right away to make sure pipes are working, crash otherwise.
-    comm.write(gpa, uiwriter, .ping) catch |err| {
+    comm.pipeWrite(.ping) catch |err| {
         logger.err("comm.write ping: {any}", .{err});
         return err;
     };

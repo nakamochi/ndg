@@ -13,8 +13,6 @@ const symbol = @import("ui/symbol.zig");
 const logger = std.log.scoped(.ngui);
 
 // these are auto-closed as soon as main fn terminates.
-const stdin = std.io.getStdIn().reader();
-const stdout = std.io.getStdOut().writer();
 const stderr = std.io.getStdErr().writer();
 
 extern "c" fn ui_update_network_status(text: [*:0]const u8, wifi_list: ?[*:0]const u8) void;
@@ -130,7 +128,7 @@ export fn nm_check_idle_time(_: *lvgl.LvTimer) void {
 /// once all's done, the daemon will send a SIGTERM back to ngui.
 export fn nm_sys_shutdown() void {
     const msg = comm.Message.poweroff;
-    comm.write(gpa, stdout, msg) catch |err| logger.err("nm_sys_shutdown: {any}", .{err});
+    comm.pipeWrite(msg) catch |err| logger.err("nm_sys_shutdown: {any}", .{err});
     state = .alert; // prevent screen sleep
     wakeup.set(); // wake up from standby, if any
 }
@@ -138,13 +136,13 @@ export fn nm_sys_shutdown() void {
 export fn nm_tab_settings_active() void {
     logger.info("starting wifi scan", .{});
     const msg = comm.Message{ .get_network_report = .{ .scan = true } };
-    comm.write(gpa, stdout, msg) catch |err| logger.err("nm_tab_settings_active: {any}", .{err});
+    comm.pipeWrite(msg) catch |err| logger.err("nm_tab_settings_active: {any}", .{err});
 }
 
 export fn nm_request_network_status(t: *lvgl.LvTimer) void {
     t.destroy();
     const msg: comm.Message = .{ .get_network_report = .{ .scan = false } };
-    comm.write(gpa, stdout, msg) catch |err| logger.err("nm_request_network_status: {any}", .{err});
+    comm.pipeWrite(msg) catch |err| logger.err("nm_request_network_status: {any}", .{err});
 }
 
 /// ssid and password args must not outlive this function.
@@ -154,9 +152,7 @@ export fn nm_wifi_start_connect(ssid: [*:0]const u8, password: [*:0]const u8) vo
         .password = std.mem.span(password),
     } };
     logger.info("connect to wifi [{s}]", .{msg.wifi_connect.ssid});
-    comm.write(gpa, stdout, msg) catch |err| {
-        logger.err("comm.write: {any}", .{err});
-    };
+    comm.pipeWrite(msg) catch |err| logger.err("nm_wifi_start_connect: {any}", .{err});
 }
 
 /// callers must hold ui mutex for the whole duration.
@@ -225,12 +221,12 @@ fn commThreadLoop() void {
 /// the UI accordingly.
 /// holds ui mutex for most of the duration.
 fn commThreadLoopCycle() !void {
-    const msg = try comm.read(gpa, stdin); // blocking
+    const msg = try comm.pipeRead(); // blocking
     ui_mutex.lock(); // guards the state and all UI calls below
     defer ui_mutex.unlock();
     switch (state) {
         .standby => switch (msg.value) {
-            .ping => try comm.write(gpa, stdout, comm.Message.pong),
+            .ping => try comm.pipeWrite(comm.Message.pong),
             .network_report,
             .bitcoind_report,
             .lightning_report,
@@ -238,7 +234,7 @@ fn commThreadLoopCycle() !void {
             else => logger.debug("ignoring {s}: in standby", .{@tagName(msg.value)}),
         },
         .active, .alert => switch (msg.value) {
-            .ping => try comm.write(gpa, stdout, comm.Message.pong),
+            .ping => try comm.pipeWrite(comm.Message.pong),
             .poweroff_progress => |rep| {
                 ui.poweroff.updateStatus(rep) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
                 msg.deinit();
@@ -275,9 +271,7 @@ fn uiThreadLoop() void {
             .standby => {
                 // go into a screen sleep mode due to no user activity
                 wakeup.reset();
-                comm.write(gpa, stdout, comm.Message.standby) catch |err| {
-                    logger.err("comm.write standby: {any}", .{err});
-                };
+                comm.pipeWrite(comm.Message.standby) catch |err| logger.err("standby: {any}", .{err});
                 screen.sleep(&ui_mutex, &wakeup); // blocking
 
                 // wake up due to touch screen activity or wakeup event is set
@@ -286,9 +280,7 @@ fn uiThreadLoop() void {
                 defer ui_mutex.unlock();
                 if (state == .standby) {
                     state = .active;
-                    comm.write(gpa, stdout, comm.Message.wakeup) catch |err| {
-                        logger.err("comm.write wakeup: {any}", .{err});
-                    };
+                    comm.pipeWrite(comm.Message.wakeup) catch |err| logger.err("wakeup: {any}", .{err});
                     lvgl.resetIdle();
 
                     last_report.mu.lock();
@@ -368,6 +360,9 @@ pub fn main() anyerror!void {
     // ensure timer is available on this platform before doing anything else;
     // the UI is unusable otherwise.
     tick_timer = try time.Timer.start();
+
+    // initialize global nd/ngui pipe plumbing.
+    comm.initPipe(gpa, .{ .r = std.io.getStdIn(), .w = std.io.getStdOut() });
 
     // initalizes display, input driver and finally creates the user interface.
     ui.init() catch |err| {

@@ -2,6 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const nif = @import("nif");
 
+const comm = @import("comm.zig");
+const types = @import("types.zig");
+
 comptime {
     if (!builtin.is_test) @compileError("test-only module");
 }
@@ -17,6 +20,27 @@ export fn lv_timer_del(timer: *opaque {}) void {
 export fn lv_disp_get_inactive_time(disp: *opaque {}) u32 {
     _ = disp;
     return 0;
+}
+
+var global_gpa_state: std.heap.GeneralPurposeAllocator(.{}) = undefined;
+var global_gpa: std.mem.Allocator = undefined;
+var initGlobalOnce = std.once(initGlobalFn);
+
+/// initializes globals like the `comm.initPipe`.
+/// can be called from any test, multiple times: the initialization is enforced to happen only once.
+/// safe for concurrent use. needs not deinit'ing: resources are released by the OS
+/// when the test binary terminates.
+pub fn initGlobal() void {
+    initGlobalOnce.call();
+}
+
+fn initGlobalFn() void {
+    global_gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+    global_gpa = global_gpa_state.allocator();
+    var pipe = types.IoPipe.create() catch |err| {
+        std.debug.panic("IoPipe.create: {any}", .{err});
+    };
+    comm.initPipe(global_gpa, pipe);
 }
 
 /// TestTimer always reports the same fixed value.

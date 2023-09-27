@@ -1,13 +1,47 @@
 //! daemon/gui communication.
 //! the protocol is a simple TLV construct: MessageTag(u16), length(u64), json-marshalled Message;
 //! little endian.
+
 const std = @import("std");
 const json = std.json;
 const mem = std.mem;
 
-const ByteArrayList = @import("types.zig").ByteArrayList;
+const types = @import("types.zig");
 
 const logger = std.log.scoped(.comm);
+
+var plumb: struct {
+    a: std.mem.Allocator,
+    r: std.fs.File.Reader,
+    w: std.fs.File.Writer,
+
+    fn pipeRead(self: @This()) !ParsedMessage {
+        return read(self.a, self.r);
+    }
+
+    fn pipeWrite(self: @This(), m: Message) !void {
+        return write(self.a, self.w, m);
+    }
+} = undefined;
+
+/// initializes a global comm pipe, making `pipeRead` and `pipeWrite` ready to use from any module.
+/// a message sent with `pipeWrite` can be subsequently read with `pipeRead`.
+pub fn initPipe(a: std.mem.Allocator, p: types.IoPipe) void {
+    plumb = .{ .a = a, .r = p.r.reader(), .w = p.w.writer() };
+}
+
+/// similar to `read` but uses a global pipe initialized with `initPipe`.
+/// blocking call.
+pub fn pipeRead() !ParsedMessage {
+    return plumb.pipeRead();
+}
+
+/// similar to `write` but uses a global pipe initialized with `initPipe`.
+/// blocking but normally buffered.
+/// callers must deallocate resources with ParsedMessage.deinit when done.
+pub fn pipeWrite(m: Message) !void {
+    return plumb.pipeWrite(m);
+}
 
 /// common errors returned by read/write functions.
 pub const Error = error{
@@ -210,7 +244,7 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !ParsedMessage {
 /// outputs the message msg using writer.
 /// all allocated resources are freed upon return.
 pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
-    var data = ByteArrayList.init(allocator);
+    var data = types.ByteArrayList.init(allocator);
     defer data.deinit();
     switch (msg) {
         .ping, .pong, .poweroff, .standby, .wakeup => {}, // zero length payload
