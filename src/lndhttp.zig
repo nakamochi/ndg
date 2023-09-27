@@ -279,7 +279,6 @@ pub const PendingList = struct {
     pending_open_channels: []struct {
         channel: PendingChannel,
         commit_fee: i64,
-        funding_expiry_blocks: i32,
     },
     pending_force_closing_channels: []struct {
         channel: PendingChannel,
