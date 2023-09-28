@@ -17,6 +17,7 @@ const time = std.time;
 
 const bitcoindrpc = @import("../bitcoindrpc.zig");
 const comm = @import("../comm.zig");
+const Config = @import("Config.zig");
 const lndhttp = @import("../lndhttp.zig");
 const network = @import("network.zig");
 const screen = @import("../ui/screen.zig");
@@ -26,6 +27,7 @@ const types = @import("../types.zig");
 const logger = std.log.scoped(.daemon);
 
 allocator: mem.Allocator,
+conf: Config,
 uireader: std.fs.File.Reader, // ngui stdout
 uiwriter: std.fs.File.Writer, // ngui stdin
 wpa_ctrl: types.WpaControl, // guarded by mu once start'ed
@@ -68,24 +70,36 @@ services: []SysService = &.{},
 
 const Daemon = @This();
 
+const InitOpt = struct {
+    allocator: std.mem.Allocator,
+    confpath: []const u8,
+    uir: std.fs.File.Reader,
+    uiw: std.fs.File.Writer,
+    wpa: [:0]const u8,
+};
+
 /// initializes a daemon instance using the provided GUI stdout reader and stdin writer,
 /// and a filesystem path to WPA control socket.
 /// callers must deinit when done.
-pub fn init(a: std.mem.Allocator, r: std.fs.File.Reader, w: std.fs.File.Writer, wpa: [:0]const u8) !Daemon {
-    var svlist = std.ArrayList(SysService).init(a);
+pub fn init(opt: InitOpt) !Daemon {
+    var svlist = std.ArrayList(SysService).init(opt.allocator);
     errdefer {
         for (svlist.items) |*sv| sv.deinit();
         svlist.deinit();
     }
     // the order is important. when powering off, the services are shut down
     // in the same order appended here.
-    try svlist.append(SysService.init(a, "lnd", .{ .stop_wait_sec = 600 }));
-    try svlist.append(SysService.init(a, "bitcoind", .{ .stop_wait_sec = 600 }));
+    try svlist.append(SysService.init(opt.allocator, "lnd", .{ .stop_wait_sec = 600 }));
+    try svlist.append(SysService.init(opt.allocator, "bitcoind", .{ .stop_wait_sec = 600 }));
+
+    const conf = try Config.init(opt.allocator, opt.confpath);
+    errdefer conf.deinit();
     return .{
-        .allocator = a,
-        .uireader = r,
-        .uiwriter = w,
-        .wpa_ctrl = try types.WpaControl.open(wpa),
+        .allocator = opt.allocator,
+        .conf = conf,
+        .uireader = opt.uir,
+        .uiwriter = opt.uiw,
+        .wpa_ctrl = try types.WpaControl.open(opt.wpa),
         .state = .stopped,
         .services = try svlist.toOwnedSlice(),
         // send a network report right at start without wifi scan to make it faster.
@@ -104,6 +118,7 @@ pub fn init(a: std.mem.Allocator, r: std.fs.File.Reader, w: std.fs.File.Writer, 
 /// releases all associated resources.
 /// the daemon must be stop'ed and wait'ed before deiniting.
 pub fn deinit(self: *Daemon) void {
+    defer self.conf.deinit();
     self.wpa_ctrl.close() catch |err| logger.err("deinit: wpa_ctrl.close: {any}", .{err});
     for (self.services) |*sv| {
         sv.deinit();
@@ -725,7 +740,13 @@ test "start-stop" {
     const t = std.testing;
 
     const pipe = try types.IoPipe.create();
-    var daemon = try Daemon.init(t.allocator, pipe.reader(), pipe.writer(), "/dev/null");
+    var daemon = try Daemon.init(.{
+        .allocator = t.allocator,
+        .confpath = "/unused.json",
+        .uir = pipe.reader(),
+        .uiw = pipe.writer(),
+        .wpa = "/dev/null",
+    });
     daemon.want_network_report = false;
     daemon.want_bitcoind_report = false;
     daemon.want_lnd_report = false;
@@ -770,7 +791,13 @@ test "start-poweroff" {
     const gui_stdin = try types.IoPipe.create();
     const gui_stdout = try types.IoPipe.create();
     const gui_reader = gui_stdin.reader();
-    var daemon = try Daemon.init(arena, gui_stdout.reader(), gui_stdin.writer(), "/dev/null");
+    var daemon = try Daemon.init(.{
+        .allocator = arena,
+        .confpath = "/unused.json",
+        .uir = gui_stdout.reader(),
+        .uiw = gui_stdin.writer(),
+        .wpa = "/dev/null",
+    });
     daemon.want_network_report = false;
     daemon.want_bitcoind_report = false;
     daemon.want_lnd_report = false;

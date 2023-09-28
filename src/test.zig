@@ -43,6 +43,46 @@ fn initGlobalFn() void {
     comm.initPipe(global_gpa, pipe);
 }
 
+pub const TempDir = struct {
+    abspath: []const u8,
+    dir: std.fs.Dir,
+
+    tmp: std.testing.TmpDir,
+    arena: *std.heap.ArenaAllocator,
+
+    pub fn create() !TempDir {
+        var arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+        arena.* = std.heap.ArenaAllocator.init(std.testing.allocator);
+        errdefer {
+            arena.deinit();
+            std.testing.allocator.destroy(arena);
+        }
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        return .{
+            .abspath = try tmp.dir.realpathAlloc(arena.allocator(), "."),
+            .dir = tmp.dir,
+            .tmp = tmp,
+            .arena = arena,
+        };
+    }
+
+    pub fn cleanup(self: *TempDir) void {
+        self.tmp.cleanup();
+        const allocator = self.arena.child_allocator;
+        self.arena.deinit();
+        allocator.destroy(self.arena);
+    }
+
+    pub fn join(self: *TempDir, paths: []const []const u8) ![]const u8 {
+        var list = std.ArrayList([]const u8).init(self.arena.child_allocator);
+        defer list.deinit();
+        try list.append(self.abspath);
+        try list.appendSlice(paths);
+        return std.fs.path.join(self.arena.allocator(), list.items);
+    }
+};
+
 /// TestTimer always reports the same fixed value.
 pub const TestTimer = struct {
     value: u64,

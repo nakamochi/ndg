@@ -17,7 +17,7 @@ const stderr = std.io.getStdErr().writer();
 /// prints usage help text to stderr.
 fn usage(prog: []const u8) !void {
     try stderr.print(
-        \\usage: {s} -gui path/to/ngui -gui-user username -wpa path
+        \\usage: {[prog]s} -gui path/to/ngui -gui-user username -wpa path [-conf {[confpath]s}]
         \\
         \\nd is a short for nakamochi daemon.
         \\the daemon executes ngui as a child process and runs until
@@ -25,16 +25,21 @@ fn usage(prog: []const u8) !void {
         \\
         \\nd logs messages to stderr.
         \\
-    , .{prog});
+    , .{ .prog = prog, .confpath = NdArgs.defaultConf });
 }
 
 /// nd program flags. see usage.
 const NdArgs = struct {
+    conf: ?[:0]const u8 = null,
     gui: ?[:0]const u8 = null,
     gui_user: ?[:0]const u8 = null,
     wpa: ?[:0]const u8 = null,
 
+    /// default path for nd config file, read or created during startup.
+    const defaultConf = "/home/uiuser/conf.json";
+
     fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+        if (self.conf) |p| allocator.free(p);
         if (self.gui) |p| allocator.free(p);
         if (self.gui_user) |p| allocator.free(p);
         if (self.wpa) |p| allocator.free(p);
@@ -51,12 +56,18 @@ fn parseArgs(gpa: std.mem.Allocator) !NdArgs {
 
     var lastarg: enum {
         none,
+        conf,
         gui,
         gui_user,
         wpa,
     } = .none;
     while (args.next()) |a| {
         switch (lastarg) {
+            .conf => {
+                flags.conf = try gpa.dupeZ(u8, a);
+                lastarg = .none;
+                continue;
+            },
             .gui => {
                 flags.gui = try gpa.dupeZ(u8, a);
                 lastarg = .none;
@@ -80,6 +91,8 @@ fn parseArgs(gpa: std.mem.Allocator) !NdArgs {
         } else if (std.mem.eql(u8, a, "-v")) {
             try stderr.print("{any}\n", .{buildopts.semver});
             std.process.exit(0);
+        } else if (std.mem.eql(u8, a, "-conf")) {
+            lastarg = .conf;
         } else if (std.mem.eql(u8, a, "-gui")) {
             lastarg = .gui;
         } else if (std.mem.eql(u8, a, "-gui-user")) {
@@ -91,10 +104,13 @@ fn parseArgs(gpa: std.mem.Allocator) !NdArgs {
             return error.UnknownArgName;
         }
     }
-
     if (lastarg != .none) {
         logger.err("invalid arg: {s} requires a value", .{@tagName(lastarg)});
         return error.MissinArgValue;
+    }
+
+    if (flags.conf == null) {
+        flags.conf = NdArgs.defaultConf;
     }
     if (flags.gui == null) {
         logger.err("missing -gui arg", .{});
@@ -130,6 +146,7 @@ pub fn main() !void {
         logger.err("memory leaks detected", .{});
     };
     const gpa = gpa_state.allocator();
+
     // parse program args first thing and fail fast if invalid
     const args = try parseArgs(gpa);
     defer args.deinit(gpa);
@@ -179,7 +196,13 @@ pub fn main() !void {
         return err;
     };
 
-    var nd = try Daemon.init(gpa, uireader, uiwriter, args.wpa.?);
+    var nd = try Daemon.init(.{
+        .allocator = gpa,
+        .confpath = args.conf.?,
+        .uir = uireader,
+        .uiw = uiwriter,
+        .wpa = args.wpa.?,
+    });
     defer nd.deinit();
     try nd.start();
 
