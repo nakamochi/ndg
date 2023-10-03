@@ -2,13 +2,15 @@ const buildopts = @import("build_options");
 const std = @import("std");
 
 const comm = @import("../comm.zig");
-const lvgl = @import("lvgl.zig");
 const drv = @import("drv.zig");
+const lvgl = @import("lvgl.zig");
 const symbol = @import("symbol.zig");
 const widget = @import("widget.zig");
-pub const poweroff = @import("poweroff.zig");
+
 pub const bitcoin = @import("bitcoin.zig");
 pub const lightning = @import("lightning.zig");
+pub const poweroff = @import("poweroff.zig");
+pub const settings = @import("settings.zig");
 
 const logger = std.log.scoped(.ui);
 
@@ -50,6 +52,14 @@ export fn nm_create_lightning_panel(parent: *lvgl.LvObj) c_int {
         return -1;
     };
     return 0;
+}
+
+export fn nm_create_settings_sysupdates(parent: *lvgl.LvObj) ?*lvgl.LvObj {
+    const card = settings.initSysupdatesPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
+        logger.err("initSysupdatesPanel: {any}", .{err});
+        return null;
+    };
+    return card.lvobj;
 }
 
 fn createInfoPanel(cont: lvgl.Container) !void {

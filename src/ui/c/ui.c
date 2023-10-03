@@ -31,6 +31,11 @@ int nm_create_bitcoin_panel(lv_obj_t *parent);
 int nm_create_lightning_panel(lv_obj_t *parent);
 
 /**
+ * creates the sysupdates section of the settings panel.
+ */
+lv_obj_t *nm_create_settings_sysupdates(lv_obj_t *parent);
+
+/**
  * invoken when the UI is switched to the network settings tab.
  */
 void nm_tab_settings_active();
@@ -149,7 +154,7 @@ static void wifi_connect_btn_callback(lv_event_t *e)
     nm_wifi_start_connect(buf, lv_textarea_get_text(settings.wifi_pwd_obj));
 }
 
-static void create_settings_panel(lv_obj_t *parent)
+static int create_settings_panel(lv_obj_t *parent)
 {
     /********************
      * wifi panel
@@ -222,16 +227,24 @@ static void create_settings_panel(lv_obj_t *parent)
     lv_obj_center(power_halt_btn_label);
 
     /********************
+     * sysupdates panel
+     ********************/
+    // ported to zig;
+    lv_obj_t *sysupdates_panel = nm_create_settings_sysupdates(parent);
+
+    /********************
      * layout
      ********************/
     static lv_coord_t parent_grid_cols[] = {LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
     static lv_coord_t parent_grid_rows[] = {/**/
         LV_GRID_CONTENT,                    /* wifi panel */
         LV_GRID_CONTENT,                    /* power panel */
+        LV_GRID_CONTENT,                    /* sysupdates panel */
         LV_GRID_TEMPLATE_LAST};
     lv_obj_set_grid_dsc_array(parent, parent_grid_cols, parent_grid_rows);
     lv_obj_set_grid_cell(wifi_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 0, 1);
     lv_obj_set_grid_cell(power_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 1, 1);
+    lv_obj_set_grid_cell(sysupdates_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 2, 1);
 
     static lv_coord_t wifi_grid_cols[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
     static lv_coord_t wifi_grid_rows[] = {/**/
@@ -269,6 +282,8 @@ static void create_settings_panel(lv_obj_t *parent)
     lv_obj_set_grid_cell(poweroff_text, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_START, 2, 1);
     /* column 1 */
     lv_obj_set_grid_cell(power_halt_btn, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 2, 1);
+
+    return 0;
 }
 
 static void tab_changed_event_cb(lv_event_t *e)
@@ -346,7 +361,9 @@ extern int nm_ui_init(lv_disp_t *disp)
     if (tab_settings == NULL) {
         return -1;
     }
-    create_settings_panel(tab_settings);
+    if (create_settings_panel(tab_settings) != 0) {
+        return -1;
+    }
 
     lv_obj_t *tab_info = lv_tabview_add_tab(tabview, NM_SYMBOL_INFO);
     if (tab_info == NULL) {

@@ -129,6 +129,7 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
 fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
     var sectimer = try time.Timer.start();
     var block_count: u32 = 801365;
+    var settings_sent = false;
 
     while (true) {
         time.sleep(time.ns_per_s);
@@ -136,6 +137,17 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
             continue;
         }
         sectimer.reset();
+
+        if (!settings_sent) {
+            settings_sent = true;
+            const sett: comm.Message.Settings = .{
+                .sysupdates = .{ .channel = .edge },
+            };
+            comm.write(gpa, w, .{ .settings = sett }) catch |err| {
+                logger.err("{}", .{err});
+                settings_sent = false;
+            };
+        }
 
         block_count += 1;
         const now = time.timestamp();

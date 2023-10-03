@@ -48,6 +48,8 @@ comm_thread: ?std.Thread = null,
 poweroff_thread: ?std.Thread = null,
 
 want_stop: bool = false, // tells daemon main loop to quit
+// send all settings to ngui
+want_settings: bool = false,
 // network flags
 want_network_report: bool, // start gathering network status and send out as soon as ready
 want_wifi_scan: bool, // initiate wifi scan at the next loop cycle
@@ -102,6 +104,8 @@ pub fn init(opt: InitOpt) !Daemon {
         .wpa_ctrl = try types.WpaControl.open(opt.wpa),
         .state = .stopped,
         .services = try svlist.toOwnedSlice(),
+        // send persisted settings immediately on start
+        .want_settings = true,
         // send a network report right at start without wifi scan to make it faster.
         .want_network_report = true,
         .want_wifi_scan = false,
@@ -285,6 +289,28 @@ fn mainThreadLoop(self: *Daemon) void {
 fn mainThreadLoopCycle(self: *Daemon) !void {
     self.mu.lock();
     defer self.mu.unlock();
+
+    if (self.want_settings) {
+        const ok = self.conf.safeReadOnly(struct {
+            fn f(conf: Config.Data) bool {
+                const msg: comm.Message.Settings = .{
+                    .sysupdates = .{
+                        .channel = switch (conf.syschannel) {
+                            .dev => .edge,
+                            .master => .stable,
+                        },
+                    },
+                };
+                comm.pipeWrite(.{ .settings = msg }) catch |err| {
+                    logger.err("{}", .{err});
+                    return false;
+                };
+                return true;
+            }
+        }.f);
+        self.want_settings = !ok;
+    }
+
     self.readWPACtrlMsg() catch |err| logger.err("readWPACtrlMsg: {any}", .{err});
     if (self.want_wifi_scan) {
         if (self.startWifiScan()) {
@@ -300,6 +326,7 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
             logger.err("network.sendReport: {any}", .{err});
         }
     }
+
     if (self.want_bitcoind_report or self.bitcoin_timer.read() > self.bitcoin_report_interval) {
         if (self.sendBitcoindReport()) {
             self.bitcoin_timer.reset();
@@ -373,6 +400,13 @@ fn commThreadLoop(self: *Daemon) void {
             .wakeup => {
                 logger.info("wakeup from standby", .{});
                 self.wakeup() catch |err| logger.err("nd.wakeup: {any}", .{err});
+            },
+            .switch_sysupdates => |chan| {
+                logger.info("switching sysupdates channel to {s}", .{@tagName(chan)});
+                self.switchSysupdates(chan) catch |err| {
+                    logger.err("switchSysupdates: {any}", .{err});
+                    // TODO: send err back to ngui
+                };
             },
             else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
         }
@@ -736,6 +770,26 @@ fn sendLightningReport(self: *Daemon) !void {
     try comm.write(self.allocator, self.uiwriter, .{ .lightning_report = lndrep });
 }
 
+fn switchSysupdates(self: *Daemon, chan: comm.Message.SysupdatesChan) !void {
+    const th = try std.Thread.spawn(.{}, switchSysupdatesThread, .{ self, chan });
+    th.detach();
+}
+
+fn switchSysupdatesThread(self: *Daemon, chan: comm.Message.SysupdatesChan) void {
+    const conf_chan: Config.SysupdatesChannel = switch (chan) {
+        .stable => .master,
+        .edge => .dev,
+    };
+    self.conf.switchSysupdates(conf_chan, .{ .run = true }) catch |err| {
+        logger.err("config.switchSysupdates: {any}", .{err});
+        // TODO: send err back to ngui
+    };
+    // schedule settings report for ngui
+    self.mu.lock();
+    defer self.mu.unlock();
+    self.want_settings = true;
+}
+
 test "start-stop" {
     const t = std.testing;
 
@@ -747,6 +801,7 @@ test "start-stop" {
         .uiw = pipe.writer(),
         .wpa = "/dev/null",
     });
+    daemon.want_settings = false;
     daemon.want_network_report = false;
     daemon.want_bitcoind_report = false;
     daemon.want_lnd_report = false;
@@ -798,6 +853,7 @@ test "start-poweroff" {
         .uiw = gui_stdin.writer(),
         .wpa = "/dev/null",
     });
+    daemon.want_settings = false;
     daemon.want_network_report = false;
     daemon.want_bitcoind_report = false;
     daemon.want_lnd_report = false;

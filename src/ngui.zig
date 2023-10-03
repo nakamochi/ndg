@@ -251,6 +251,9 @@ fn commThreadLoopCycle() !void {
                 ui.lightning.updateTabPanel(rep) catch |err| logger.err("lightning.updateTabPanel: {any}", .{err});
                 last_report.replace(msg);
             },
+            .settings => |sett| {
+                ui.settings.update(sett) catch |err| logger.err("settings.update: {any}", .{err});
+            },
             else => logger.warn("unhandled msg tag {s}", .{@tagName(msg.value)}),
         },
     }

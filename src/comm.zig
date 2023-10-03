@@ -50,6 +50,32 @@ pub const Error = error{
     CommWriteTooLarge,
 };
 
+/// it is important to preserve ordinal values for future compatiblity,
+/// especially when nd and gui may temporary diverge in their implementations.
+pub const MessageTag = enum(u16) {
+    ping = 0x01,
+    pong = 0x02,
+    poweroff = 0x03,
+    wifi_connect = 0x04,
+    network_report = 0x05,
+    get_network_report = 0x06,
+    // ngui -> nd: screen timeout, no user activity; no reply
+    standby = 0x07,
+    // ngui -> nd: resume screen due to user touch; no reply
+    wakeup = 0x08,
+    // nd -> ngui: reports poweroff progress
+    poweroff_progress = 0x09,
+    // nd -> ngui: bitcoin core daemon status report
+    bitcoind_report = 0x0a,
+    // nd -> ngui: lnd status and stats report
+    lightning_report = 0x0b,
+    // ngui -> nd: switch sysupdates channel
+    switch_sysupdates = 0x0c,
+    // nd -> ngui: all ndg settings
+    settings = 0x0d,
+    // next: 0x0e
+};
+
 /// daemon and gui exchange messages of this type.
 pub const Message = union(MessageTag) {
     ping: void,
@@ -63,6 +89,8 @@ pub const Message = union(MessageTag) {
     poweroff_progress: PoweroffProgress,
     bitcoind_report: BitcoinReport,
     lightning_report: LightningReport,
+    switch_sysupdates: SysupdatesChan,
+    settings: Settings,
 
     pub const WifiConnect = struct {
         ssid: []const u8,
@@ -159,28 +187,17 @@ pub const Message = union(MessageTag) {
             },
         },
     };
-};
 
-/// it is important to preserve ordinal values for future compatiblity,
-/// especially when nd and gui may temporary diverge in their implementations.
-pub const MessageTag = enum(u16) {
-    ping = 0x01,
-    pong = 0x02,
-    poweroff = 0x03,
-    wifi_connect = 0x04,
-    network_report = 0x05,
-    get_network_report = 0x06,
-    // ngui -> nd: screen timeout, no user activity; no reply
-    standby = 0x07,
-    // ngui -> nd: resume screen due to user touch; no reply
-    wakeup = 0x08,
-    // nd -> ngui: reports poweroff progress
-    poweroff_progress = 0x09,
-    // nd -> ngui: bitcoin core daemon status report
-    bitcoind_report = 0x0a,
-    // nd -> ngui: lnd status and stats report
-    lightning_report = 0x0b,
-    // next: 0x0c
+    pub const SysupdatesChan = enum {
+        stable, // master branch in sysupdates
+        edge, // dev branch in sysupdates
+    };
+
+    pub const Settings = struct {
+        sysupdates: struct {
+            channel: SysupdatesChan,
+        },
+    };
 };
 
 /// the return value type from `read` fn.
@@ -254,6 +271,8 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
         .poweroff_progress => try json.stringify(msg.poweroff_progress, .{}, data.writer()),
         .bitcoind_report => try json.stringify(msg.bitcoind_report, .{}, data.writer()),
         .lightning_report => try json.stringify(msg.lightning_report, .{}, data.writer()),
+        .switch_sysupdates => try json.stringify(msg.switch_sysupdates, .{}, data.writer()),
+        .settings => try json.stringify(msg.settings, .{}, data.writer()),
     }
     if (data.items.len > std.math.maxInt(u64)) {
         return Error.CommWriteTooLarge;
@@ -311,6 +330,24 @@ test "write" {
     try write(t.allocator, buf.writer(), msg);
 
     const payload = "{\"ssid\":\"wlan\",\"password\":\"secret\"}";
+    var js = std.ArrayList(u8).init(t.allocator);
+    defer js.deinit();
+    try js.writer().writeIntLittle(u16, @intFromEnum(msg));
+    try js.writer().writeIntLittle(u64, payload.len);
+    try js.appendSlice(payload);
+
+    try t.expectEqualStrings(js.items, buf.items);
+}
+
+test "write enum" {
+    const t = std.testing;
+
+    var buf = std.ArrayList(u8).init(t.allocator);
+    defer buf.deinit();
+    const msg = Message{ .switch_sysupdates = .edge };
+    try write(t.allocator, buf.writer(), msg);
+
+    const payload = "\"edge\"";
     var js = std.ArrayList(u8).init(t.allocator);
     defer js.deinit();
     try js.writer().writeIntLittle(u16, @intFromEnum(msg));
