@@ -790,6 +790,76 @@ pub const Bar = struct {
     }
 };
 
+pub const Dropdown = struct {
+    lvobj: *LvObj,
+
+    pub usingnamespace BaseObjMethods;
+    pub usingnamespace WidgetMethods;
+    pub usingnamespace InteractiveMethods;
+
+    /// creates a new dropdown with the options provided in ostr, a '\n' delimited list.
+    /// the options are alloc-duped by LVGL and free'd when the dropdown is destroy'ed.
+    /// LVGL's lv_dropdown drawing supports up to 128 chars.
+    pub fn new(parent: anytype, ostr: [*:0]const u8) !Dropdown {
+        const o = lv_dropdown_create(parent.lvobj) orelse return error.OutOfMemory;
+        lv_dropdown_set_options(o, ostr);
+        return .{ .lvobj = o };
+    }
+
+    /// same as new except options are not alloc-duplicated. the ostr must live at least
+    /// as long as the dropdown object.
+    pub fn newStatic(parent: anytype, ostr: [*:0]const u8) !Dropdown {
+        const o = lv_dropdown_create(parent.lvobj) orelse return error.OutOfMemory;
+        lv_dropdown_set_options_static(o, ostr);
+        return .{ .lvobj = o };
+    }
+
+    /// once set, the text is shown regardless of the selected option until removed
+    /// with `clearText`. the text must outlive the dropdown object.
+    pub fn setText(self: Dropdown, text: [*:0]const u8) void {
+        lv_dropdown_set_text(self.lvobj, text);
+    }
+
+    /// deletes the text set with `setText`.
+    pub fn clearText(self: Dropdown) void {
+        lv_dropdown_set_text(self.lvobj, null);
+    }
+
+    /// the options are alloc-duped by LVGL and free'd when the dropdown is destroy'ed.
+    /// LVGL's lv_dropdown drawing supports up to 128 chars.
+    pub fn setOptions(self: Dropdown, opts: [*:0]const u8) void {
+        lv_dropdown_set_options(self.lvobj, opts);
+    }
+
+    pub fn clearOptions(self: Dropdown) void {
+        lv_dropdown_clear_options(self.lvobj);
+    }
+
+    pub fn addOption(self: Dropdown, opt: [*:0]const u8, pos: u32) void {
+        lv_dropdown_add_option(self.lvobj, opt, pos);
+    }
+
+    /// idx is 0-based index of the option item provided to new or newStatic.
+    pub fn setSelected(self: Dropdown, idx: u16) void {
+        lv_dropdown_set_selected(self.lvobj, idx);
+    }
+
+    pub fn getSelected(self: Dropdown) u16 {
+        return lv_dropdown_get_selected(self.lvobj);
+    }
+
+    /// returns selected option as a slice of the buf.
+    /// LVGL's lv_dropdown drawing supports up to 128 chars.
+    pub fn getSelectedStr(self: Dropdown, buf: []u8) [:0]const u8 {
+        const buflen: u32 = @min(buf.len, std.math.maxInt(u32));
+        lv_dropdown_get_selected_str(self.lvobj, buf.ptr, buflen);
+        buf[buf.len - 1] = 0;
+        const cbuf: [*c]u8 = buf.ptr;
+        const name: [:0]const u8 = std.mem.span(cbuf);
+        return name;
+    }
+};
+
 /// represents lv_obj_t type in C.
 pub const LvObj = opaque {
     /// feature-flags controlling object's behavior.
@@ -1044,6 +1114,16 @@ extern fn lv_label_set_text(label: *LvObj, text: [*:0]const u8) void;
 extern fn lv_label_set_text_static(label: *LvObj, text: [*:0]const u8) void;
 extern fn lv_label_set_long_mode(label: *LvObj, mode: c.lv_label_long_mode_t) void;
 extern fn lv_label_set_recolor(label: *LvObj, enable: bool) void;
+
+extern fn lv_dropdown_create(parent: *LvObj) ?*LvObj;
+extern fn lv_dropdown_set_text(obj: *LvObj, text: ?[*:0]const u8) void;
+extern fn lv_dropdown_set_options(obj: *LvObj, options: [*:0]const u8) void;
+extern fn lv_dropdown_set_options_static(obj: *LvObj, options: [*:0]const u8) void;
+extern fn lv_dropdown_add_option(obj: *LvObj, option: [*:0]const u8, pos: u32) void;
+extern fn lv_dropdown_clear_options(obj: *LvObj) void;
+extern fn lv_dropdown_set_selected(obj: *LvObj, idx: u16) void;
+extern fn lv_dropdown_get_selected(obj: *const LvObj) u16;
+extern fn lv_dropdown_get_selected_str(obj: *const LvObj, buf: [*]u8, bufsize: u32) void;
 
 extern fn lv_spinner_create(parent: *LvObj, speed_ms: u32, arc_deg: u32) ?*LvObj;
 
