@@ -1,13 +1,14 @@
-///! LVGL types in zig.
-///
-/// lv_xxx functions are directly linked against LVGL lib.
-/// other functions, without the lv_ prefix are defined in zig and provide type safety
-/// and extra functionality, sometimes composed of multiple calls to lv_xxx.
-///
-/// nm_xxx functions defined here are exported with "c" convention to allow
-/// calls from C code.
-///
-/// the module usage must be started with a call to init.
+//! LVGL types in zig.
+//!
+//! lv_xxx functions are directly linked against LVGL lib.
+//! other functions, without the lv_ prefix are defined in zig and provide type safety
+//! and extra functionality, sometimes composed of multiple calls to lv_xxx.
+//!
+//! nm_xxx functions defined here are exported with "c" convention to allow
+//! calls from C code.
+//!
+//! the module usage must be started with a call to init.
+
 const std = @import("std");
 const c = @cImport({
     @cInclude("lvgl/lvgl.h");
@@ -438,6 +439,24 @@ pub const WidgetMethods = struct {
     pub fn setBackgroundColor(self: anytype, v: Color, sel: LvStyle.Selector) void {
         lv_obj_set_style_bg_color(self.lvobj, v, sel.value());
     }
+
+    pub fn show(self: anytype) void {
+        self.clearFlag(.hidden);
+    }
+
+    pub fn hide(self: anytype) void {
+        self.setFlag(.hidden);
+    }
+};
+
+pub const InteractiveMethods = struct {
+    pub fn enable(self: anytype) void {
+        lv_obj_clear_state(self.lvobj, c.LV_STATE_DISABLED);
+    }
+
+    pub fn disable(self: anytype) void {
+        lv_obj_add_state(self.lvobj, c.LV_STATE_DISABLED);
+    }
 };
 
 /// a base layer object which all the other UI elements are placed onto.
@@ -669,7 +688,12 @@ pub const Label = struct {
         lv_label_set_text(self.lvobj, text);
     }
 
-    /// formats a new label text.
+    /// sets label text without heap alloc but assumes text outlives the label obj.
+    pub fn setTextStatic(self: Label, text: [*:0]const u8) void {
+        lv_label_set_text_static(self.lvobj, text);
+    }
+
+    /// formats a new label text and passes it on to `setText`.
     /// the buffer can be dropped once the function returns.
     pub fn setTextFmt(self: Label, buf: []u8, comptime format: []const u8, args: anytype) !void {
         var s = try std.fmt.bufPrintZ(buf, format, args);
@@ -685,15 +709,16 @@ pub const Label = struct {
 /// a button with a child Label.
 pub const TextButton = struct {
     lvobj: *LvObj,
-    label: *LvObj,
+    label: Label,
 
     pub usingnamespace BaseObjMethods;
     pub usingnamespace WidgetMethods;
+    pub usingnamespace InteractiveMethods;
 
     pub fn new(parent: anytype, text: [*:0]const u8) !TextButton {
         const btn = lv_btn_create(parent.lvobj) orelse return error.OutOfMemory;
         const label = try Label.new(Container{ .lvobj = btn }, text, .{ .long_mode = .dot, .pos = .center });
-        return .{ .lvobj = btn, .label = label.lvobj };
+        return .{ .lvobj = btn, .label = label };
     }
 };
 
@@ -964,6 +989,8 @@ extern fn lv_obj_del(obj: *LvObj) void;
 /// deletes children of the obj.
 extern fn lv_obj_clean(obj: *LvObj) void;
 
+extern fn lv_obj_add_state(obj: *LvObj, c.lv_state_t) void;
+extern fn lv_obj_clear_state(obj: *LvObj, c.lv_state_t) void;
 extern fn lv_obj_add_flag(obj: *LvObj, v: c.lv_obj_flag_t) void;
 extern fn lv_obj_clear_flag(obj: *LvObj, v: c.lv_obj_flag_t) void;
 extern fn lv_obj_has_flag(obj: *LvObj, v: c.lv_obj_flag_t) bool;
