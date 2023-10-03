@@ -45,7 +45,7 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
 
     // blockchain section
     {
-        const card = try lvgl.Card.new(parent, "BLOCKCHAIN");
+        const card = try lvgl.Card.new(parent, "BLOCKCHAIN", .{});
         const row = try lvgl.FlexLayout.new(card, .row, .{});
         row.setWidth(lvgl.sizePercent(100));
         row.setHeightToContent();
@@ -69,7 +69,7 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
     }
     // balance section
     {
-        const card = try lvgl.Card.new(parent, "ON-CHAIN BALANCE");
+        const card = try lvgl.Card.new(parent, "ON-CHAIN BALANCE", .{});
         const row = try lvgl.FlexLayout.new(card, .row, .{});
         row.setWidth(lvgl.sizePercent(100));
         row.setHeightToContent();
@@ -93,7 +93,7 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
     }
     // mempool section
     {
-        const card = try lvgl.Card.new(parent, "MEMPOOL");
+        const card = try lvgl.Card.new(parent, "MEMPOOL", .{});
         const row = try lvgl.FlexLayout.new(card, .row, .{});
         row.setWidth(lvgl.sizePercent(100));
         row.clearFlag(.scrollable);

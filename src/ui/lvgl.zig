@@ -623,17 +623,44 @@ pub const Window = struct {
 pub const Card = struct {
     lvobj: *LvObj,
     title: Label,
+    spinner: ?Spinner = null,
 
     pub usingnamespace BaseObjMethods;
     pub usingnamespace WidgetMethods;
 
-    pub fn new(parent: anytype, title: [*:0]const u8) !Card {
+    pub const Opt = struct {
+        /// embeds a spinner in the top-right corner; control with spin fn.
+        spinner: bool = false,
+    };
+
+    pub fn new(parent: anytype, title: [*:0]const u8, opt: Opt) !Card {
         const flex = (try Container.new(parent)).flex(.column, .{});
         flex.setHeightToContent();
         flex.setWidth(sizePercent(100));
-        const tl = try Label.new(flex, title, .{});
-        tl.addStyle(nm_style_title(), .{});
-        return .{ .lvobj = flex.lvobj, .title = tl };
+        var card: Card = .{ .lvobj = flex.lvobj, .title = undefined };
+
+        if (opt.spinner) {
+            const row = try FlexLayout.new(flex, .row, .{});
+            row.setWidth(sizePercent(100));
+            row.setHeightToContent();
+            card.title = try Label.new(row, title, .{});
+            card.title.flexGrow(1);
+            card.spinner = try Spinner.new(row);
+            card.spinner.?.flexGrow(0);
+            card.spin(.off);
+        } else {
+            card.title = try Label.new(flex, title, .{});
+        }
+        card.title.addStyle(nm_style_title(), .{});
+
+        return card;
+    }
+
+    pub fn spin(self: Card, onoff: enum { on, off }) void {
+        if (self.spinner) |p| switch (onoff) {
+            .on => p.show(),
+            .off => p.hide(),
+        };
     }
 };
 

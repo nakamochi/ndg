@@ -39,7 +39,7 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
 
     // info section
     {
-        const card = try lvgl.Card.new(parent, "INFO");
+        const card = try lvgl.Card.new(parent, "INFO", .{});
         const row = try lvgl.FlexLayout.new(card, .row, .{});
         row.setHeightToContent();
         row.setWidth(lvgl.sizePercent(100));
@@ -63,7 +63,7 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
     }
     // balance section
     {
-        const card = try lvgl.Card.new(parent, "BALANCE");
+        const card = try lvgl.Card.new(parent, "BALANCE", .{});
         const row = try lvgl.FlexLayout.new(card, .row, .{});
         row.setWidth(lvgl.sizePercent(100));
         row.clearFlag(.scrollable);
@@ -89,7 +89,7 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
     }
     // channels section
     {
-        const card = try lvgl.Card.new(parent, "CHANNELS");
+        const card = try lvgl.Card.new(parent, "CHANNELS", .{});
         tab.channels_cont = try lvgl.FlexLayout.new(card, .column, .{});
         tab.channels_cont.setHeightToContent();
         tab.channels_cont.setWidth(lvgl.sizePercent(100));
