@@ -234,13 +234,13 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !ParsedMessage {
             else => Error.CommReadZeroLenInNonVoidTag,
         };
     }
-
-    var bytes = try allocator.alloc(u8, len);
-    defer allocator.free(bytes);
-    try reader.readNoEof(bytes);
-    return switch (tag) {
+    switch (tag) {
         .ping, .pong, .poweroff, .standby, .wakeup => unreachable, // handled above
         inline else => |t| {
+            var bytes = try allocator.alloc(u8, len);
+            defer allocator.free(bytes);
+            try reader.readNoEof(bytes);
+
             var arena = try allocator.create(std.heap.ArenaAllocator);
             arena.* = std.heap.ArenaAllocator.init(allocator);
             errdefer {
@@ -255,7 +255,7 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !ParsedMessage {
             };
             return parsed;
         },
-    };
+    }
 }
 
 /// outputs the message msg using writer.

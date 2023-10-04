@@ -376,9 +376,8 @@ fn commThreadLoop(self: *Daemon) void {
         };
         defer res.deinit();
 
-        const msg = res.value;
-        logger.debug("got msg: {s}", .{@tagName(msg)});
-        switch (msg) {
+        logger.debug("got msg: {s}", .{@tagName(res.value)});
+        switch (res.value) {
             .pong => {
                 logger.info("received pong from ngui", .{});
             },
@@ -408,7 +407,7 @@ fn commThreadLoop(self: *Daemon) void {
                     // TODO: send err back to ngui
                 };
             },
-            else => logger.warn("unhandled msg tag {s}", .{@tagName(msg)}),
+            else => |v| logger.warn("unhandled msg tag {s}", .{@tagName(v)}),
         }
 
         self.mu.lock();
@@ -579,7 +578,7 @@ fn sendBitcoindReport(self: *Daemon) !void {
     const mempool = try client.call(.getmempoolinfo, {});
     defer mempool.deinit();
 
-    const balance: ?lndhttp.WalletBalance = blk: {
+    const balance: ?lndhttp.Client.Result(.walletbalance) = blk: { // lndhttp.WalletBalance
         var lndc = lndhttp.Client.init(.{
             .allocator = self.allocator,
             .tlscert_path = "/home/lnd/.lnd/tls.cert",
@@ -587,9 +586,9 @@ fn sendBitcoindReport(self: *Daemon) !void {
         }) catch break :blk null;
         defer lndc.deinit();
         const res = lndc.call(.walletbalance, {}) catch break :blk null;
-        defer res.deinit();
-        break :blk res.value;
+        break :blk res;
     };
+    defer if (balance) |bal| bal.deinit();
 
     const btcrep: comm.Message.BitcoinReport = .{
         .blocks = bcinfo.value.blocks,
@@ -617,11 +616,11 @@ fn sendBitcoindReport(self: *Daemon) !void {
         },
         .balance = if (balance) |bal| .{
             .source = .lnd,
-            .total = bal.total_balance,
-            .confirmed = bal.confirmed_balance,
-            .unconfirmed = bal.unconfirmed_balance,
-            .locked = bal.locked_balance,
-            .reserved = bal.reserved_balance_anchor_chan,
+            .total = bal.value.total_balance,
+            .confirmed = bal.value.confirmed_balance,
+            .unconfirmed = bal.value.unconfirmed_balance,
+            .locked = bal.value.locked_balance,
+            .reserved = bal.value.reserved_balance_anchor_chan,
         } else null,
     };
 

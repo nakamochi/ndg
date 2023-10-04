@@ -137,7 +137,7 @@ pub const Client = struct {
     fn parseResponse(self: Client, comptime m: Method, b: []const u8) !Result(m) {
         var resp = try types.Deinitable(RpcResponse(m)).init(self.allocator);
         errdefer resp.deinit();
-        resp.value = try std.json.parseFromSliceLeaky(RpcResponse(m), self.allocator, b, .{
+        resp.value = try std.json.parseFromSliceLeaky(RpcResponse(m), resp.arena.allocator(), b, .{
             .ignore_unknown_fields = true,
             .allocate = .alloc_always,
         });
@@ -150,6 +150,7 @@ pub const Client = struct {
         return .{ .value = resp.value.result.?, .arena = resp.arena };
     }
 
+    /// callers own returned value.
     fn formatreq(self: *Client, comptime m: Method, args: MethodArgs(m)) ![]const u8 {
         const req = RpcRequest(m){
             .id = self.reqid.fetchAdd(1, .Monotonic),
@@ -163,7 +164,7 @@ pub const Client = struct {
         const auth = try self.getAuthBase64();
         defer self.allocator.free(auth);
 
-        var bytes = std.ArrayList(u8).init(self.allocator);
+        var bytes = std.ArrayList(u8).init(self.allocator); // return value as owned slice
         const w = bytes.writer();
         try w.writeAll("POST / HTTP/1.0\r\n");
         //try w.writeAll("Host: 127.0.0.1\n", .{});

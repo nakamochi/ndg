@@ -166,7 +166,7 @@ pub const Client = struct {
             .listchannels => .{
                 .httpmethod = .GET,
                 .url = blk: {
-                    var buf = std.ArrayList(u8).init(arena);
+                    var buf = std.ArrayList(u8).init(arena); // free'ed when arena is deinit'ed, formatreq call site
                     const w = buf.writer();
                     try std.fmt.format(w, "{s}/v1/channels?peer_alias_lookup={}", .{ self.apibase, args.peer_alias_lookup });
                     if (args.status) |v| switch (v) {
@@ -181,7 +181,7 @@ pub const Client = struct {
                         // TODO: sanitize; Uri.writeEscapedQuery(w, q);
                         try std.fmt.format(w, "&peer={s}", .{v});
                     }
-                    break :blk try std.Uri.parse(buf.items);
+                    break :blk try std.Uri.parse(buf.items); // uri point to the original buf
                 },
                 .headers = blk: {
                     var h = std.http.Headers{ .allocator = arena };

@@ -132,7 +132,9 @@ fn parseArgs(gpa: std.mem.Allocator) !NdArgs {
 var sigquit: std.Thread.ResetEvent = .{};
 
 fn sighandler(sig: c_int) callconv(.C) void {
-    logger.info("received signal {}", .{sig});
+    if (sigquit.isSet()) {
+        return;
+    }
     switch (sig) {
         os.SIG.INT, os.SIG.TERM => sigquit.set(),
         else => {},
@@ -215,6 +217,7 @@ pub fn main() !void {
     try os.sigaction(os.SIG.INT, &sa, null);
     try os.sigaction(os.SIG.TERM, &sa, null);
     sigquit.wait();
+    logger.info("sigquit: terminating ...", .{});
 
     // reached here due to sig TERM or INT.
     // tell deamon to terminate threads.

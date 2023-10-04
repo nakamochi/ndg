@@ -226,15 +226,24 @@ fn commThreadLoopCycle() !void {
     defer ui_mutex.unlock();
     switch (state) {
         .standby => switch (msg.value) {
-            .ping => try comm.pipeWrite(comm.Message.pong),
+            .ping => {
+                defer msg.deinit();
+                try comm.pipeWrite(comm.Message.pong);
+            },
             .network_report,
             .bitcoind_report,
             .lightning_report,
             => last_report.replace(msg),
-            else => logger.debug("ignoring {s}: in standby", .{@tagName(msg.value)}),
+            else => {
+                logger.debug("ignoring {s}: in standby", .{@tagName(msg.value)});
+                msg.deinit();
+            },
         },
         .active, .alert => switch (msg.value) {
-            .ping => try comm.pipeWrite(comm.Message.pong),
+            .ping => {
+                defer msg.deinit();
+                try comm.pipeWrite(comm.Message.pong);
+            },
             .poweroff_progress => |rep| {
                 ui.poweroff.updateStatus(rep) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
                 msg.deinit();
@@ -253,8 +262,12 @@ fn commThreadLoopCycle() !void {
             },
             .settings => |sett| {
                 ui.settings.update(sett) catch |err| logger.err("settings.update: {any}", .{err});
+                msg.deinit();
             },
-            else => logger.warn("unhandled msg tag {s}", .{@tagName(msg.value)}),
+            else => {
+                logger.warn("unhandled msg tag {s}", .{@tagName(msg.value)});
+                msg.deinit();
+            },
         },
     }
 }
@@ -342,7 +355,9 @@ fn usage(prog: []const u8) !void {
 
 /// handles sig TERM and INT: makes the program exit.
 fn sighandler(sig: c_int) callconv(.C) void {
-    logger.info("received signal {}", .{sig});
+    if (sigquit.isSet()) {
+        return;
+    }
     switch (sig) {
         os.SIG.INT, os.SIG.TERM => sigquit.set(),
         else => {},
@@ -399,9 +414,13 @@ pub fn main() anyerror!void {
     try os.sigaction(os.SIG.INT, &sa, null);
     try os.sigaction(os.SIG.TERM, &sa, null);
     sigquit.wait();
+    logger.info("sigquit: terminating ...", .{});
 
+    // assuming nd won't ever send any more messages,
+    // so should be safe to touch last_report without a fence.
     last_report.deinit();
-    logger.info("main terminated", .{});
+
+    // let the OS rip off UI and comm threads
 }
 
 test "tick" {
