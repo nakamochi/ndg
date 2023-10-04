@@ -5,8 +5,9 @@ const std = @import("std");
 
 const logger = std.log.scoped(.config);
 
-// default values
+// default values. these should match what's in the sysupdates repo.
 const SYSUPDATES_CRON_SCRIPT_PATH = "/etc/cron.hourly/sysupdate";
+/// must be the same as https://git.qcode.ch/nakamochi/sysupdates/src/branch/master/update.sh
 const SYSUPDATES_RUN_SCRIPT_NAME = "update.sh";
 const SYSUPDATES_RUN_SCRIPT_PATH = "/ssd/sysupdates/" ++ SYSUPDATES_RUN_SCRIPT_NAME;
 
