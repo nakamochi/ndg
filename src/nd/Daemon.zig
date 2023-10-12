@@ -567,16 +567,79 @@ fn readWPACtrlMsg(self: *Daemon) !void {
 }
 
 fn sendOnchainReport(self: *Daemon) !void {
+    const stats = self.fetchOnchainStats() catch |err| {
+        switch (err) {
+            error.FileNotFound, // cookie file might not exist yet
+            error.RpcInWarmup,
+            // bitcoind is still starting up: pretend the repost is sent.
+            // TODO: report actual startup ptogress to the UI
+            // https://git.qcode.ch/nakamochi/ndg/issues/30
+            => return,
+            // otherwise, propagate the error to the caller.
+            else => return err,
+        }
+    };
+    defer {
+        stats.bcinfo.deinit();
+        stats.netinfo.deinit();
+        stats.mempool.deinit();
+        if (stats.balance) |bal| bal.deinit();
+    }
+
+    const btcrep: comm.Message.OnchainReport = .{
+        .blocks = stats.bcinfo.value.blocks,
+        .headers = stats.bcinfo.value.headers,
+        .timestamp = stats.bcinfo.value.time,
+        .hash = stats.bcinfo.value.bestblockhash,
+        .ibd = stats.bcinfo.value.initialblockdownload,
+        .diskusage = stats.bcinfo.value.size_on_disk,
+        .version = stats.netinfo.value.subversion,
+        .conn_in = stats.netinfo.value.connections_in,
+        .conn_out = stats.netinfo.value.connections_out,
+        .warnings = stats.bcinfo.value.warnings, // TODO: netinfo.result.warnings
+        .localaddr = &.{}, // TODO: populate
+        // something similar to this:
+        // @round(bcinfo.verificationprogress * 100)
+        .verifyprogress = 0,
+        .mempool = .{
+            .loaded = stats.mempool.value.loaded,
+            .txcount = stats.mempool.value.size,
+            .usage = stats.mempool.value.usage,
+            .max = stats.mempool.value.maxmempool,
+            .totalfee = stats.mempool.value.total_fee,
+            .minfee = stats.mempool.value.mempoolminfee,
+            .fullrbf = stats.mempool.value.fullrbf,
+        },
+        .balance = if (stats.balance) |bal| .{
+            .source = .lnd,
+            .total = bal.value.total_balance,
+            .confirmed = bal.value.confirmed_balance,
+            .unconfirmed = bal.value.unconfirmed_balance,
+            .locked = bal.value.locked_balance,
+            .reserved = bal.value.reserved_balance_anchor_chan,
+        } else null,
+    };
+
+    try comm.write(self.allocator, self.uiwriter, .{ .onchain_report = btcrep });
+}
+
+const OnchainStats = struct {
+    bcinfo: bitcoindrpc.Client.Result(.getblockchaininfo),
+    netinfo: bitcoindrpc.Client.Result(.getnetworkinfo),
+    mempool: bitcoindrpc.Client.Result(.getmempoolinfo),
+    // lnd wallet may be uninitialized
+    balance: ?lndhttp.Client.Result(.walletbalance),
+};
+
+/// callers own returned value.
+fn fetchOnchainStats(self: *Daemon) !OnchainStats {
     var client = bitcoindrpc.Client{
         .allocator = self.allocator,
         .cookiepath = "/ssd/bitcoind/mainnet/.cookie",
     };
     const bcinfo = try client.call(.getblockchaininfo, {});
-    defer bcinfo.deinit();
     const netinfo = try client.call(.getnetworkinfo, {});
-    defer netinfo.deinit();
     const mempool = try client.call(.getmempoolinfo, {});
-    defer mempool.deinit();
 
     const balance: ?lndhttp.Client.Result(.walletbalance) = blk: { // lndhttp.WalletBalance
         var lndc = lndhttp.Client.init(.{
@@ -588,43 +651,12 @@ fn sendOnchainReport(self: *Daemon) !void {
         const res = lndc.call(.walletbalance, {}) catch break :blk null;
         break :blk res;
     };
-    defer if (balance) |bal| bal.deinit();
-
-    const btcrep: comm.Message.OnchainReport = .{
-        .blocks = bcinfo.value.blocks,
-        .headers = bcinfo.value.headers,
-        .timestamp = bcinfo.value.time,
-        .hash = bcinfo.value.bestblockhash,
-        .ibd = bcinfo.value.initialblockdownload,
-        .diskusage = bcinfo.value.size_on_disk,
-        .version = netinfo.value.subversion,
-        .conn_in = netinfo.value.connections_in,
-        .conn_out = netinfo.value.connections_out,
-        .warnings = bcinfo.value.warnings, // TODO: netinfo.result.warnings
-        .localaddr = &.{}, // TODO: populate
-        // something similar to this:
-        // @round(bcinfo.verificationprogress * 100)
-        .verifyprogress = 0,
-        .mempool = .{
-            .loaded = mempool.value.loaded,
-            .txcount = mempool.value.size,
-            .usage = mempool.value.usage,
-            .max = mempool.value.maxmempool,
-            .totalfee = mempool.value.total_fee,
-            .minfee = mempool.value.mempoolminfee,
-            .fullrbf = mempool.value.fullrbf,
-        },
-        .balance = if (balance) |bal| .{
-            .source = .lnd,
-            .total = bal.value.total_balance,
-            .confirmed = bal.value.confirmed_balance,
-            .unconfirmed = bal.value.unconfirmed_balance,
-            .locked = bal.value.locked_balance,
-            .reserved = bal.value.reserved_balance_anchor_chan,
-        } else null,
+    return .{
+        .bcinfo = bcinfo,
+        .netinfo = netinfo,
+        .mempool = mempool,
+        .balance = balance,
     };
-
-    try comm.write(self.allocator, self.uiwriter, .{ .onchain_report = btcrep });
 }
 
 fn sendLightningReport(self: *Daemon) !void {
