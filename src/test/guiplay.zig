@@ -152,7 +152,7 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
         block_count += 1;
         const now = time.timestamp();
 
-        const btcrep: comm.Message.BitcoinReport = .{
+        const btcrep: comm.Message.OnchainReport = .{
             .blocks = block_count,
             .headers = block_count,
             .timestamp = @intCast(now),
@@ -183,7 +183,7 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
                 .reserved = 100000,
             },
         };
-        comm.write(gpa, w, .{ .bitcoind_report = btcrep }) catch |err| logger.err("comm.write: {any}", .{err});
+        comm.write(gpa, w, .{ .onchain_report = btcrep }) catch |err| logger.err("comm.write: {any}", .{err});
 
         if (block_count % 2 == 0) {
             const lndrep: comm.Message.LightningReport = .{

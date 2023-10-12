@@ -39,7 +39,7 @@ var state: enum {
 var last_report: struct {
     mu: std.Thread.Mutex = .{},
     network: ?comm.ParsedMessage = null, // NetworkReport
-    bitcoind: ?comm.ParsedMessage = null, // BitcoinReport
+    onchain: ?comm.ParsedMessage = null, // OnchainReport
     lightning: ?comm.ParsedMessage = null, // LightningReport
 
     fn deinit(self: *@This()) void {
@@ -49,9 +49,9 @@ var last_report: struct {
             v.deinit();
             self.network = null;
         }
-        if (self.bitcoind) |v| {
+        if (self.onchain) |v| {
             v.deinit();
-            self.bitcoind = null;
+            self.onchain = null;
         }
         if (self.lightning) |v| {
             v.deinit();
@@ -70,11 +70,11 @@ var last_report: struct {
                 }
                 self.network = new;
             },
-            .bitcoind_report => {
-                if (self.bitcoind) |old| {
+            .onchain_report => {
+                if (self.onchain) |old| {
                     old.deinit();
                 }
-                self.bitcoind = new;
+                self.onchain = new;
             },
             .lightning_report => {
                 if (self.lightning) |old| {
@@ -231,7 +231,7 @@ fn commThreadLoopCycle() !void {
                 try comm.pipeWrite(comm.Message.pong);
             },
             .network_report,
-            .bitcoind_report,
+            .onchain_report,
             .lightning_report,
             => last_report.replace(msg),
             else => {
@@ -252,7 +252,7 @@ fn commThreadLoopCycle() !void {
                 updateNetworkStatus(rep) catch |err| logger.err("updateNetworkStatus: {any}", .{err});
                 last_report.replace(msg);
             },
-            .bitcoind_report => |rep| {
+            .onchain_report => |rep| {
                 ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
                 last_report.replace(msg);
             },
@@ -306,8 +306,8 @@ fn uiThreadLoop() void {
                             logger.err("updateNetworkStatus: {any}", .{err});
                         };
                     }
-                    if (last_report.bitcoind) |msg| {
-                        ui.bitcoin.updateTabPanel(msg.value.bitcoind_report) catch |err| {
+                    if (last_report.onchain) |msg| {
+                        ui.bitcoin.updateTabPanel(msg.value.onchain_report) catch |err| {
                             logger.err("bitcoin.updateTabPanel: {any}", .{err});
                         };
                     }

@@ -66,7 +66,7 @@ pub const MessageTag = enum(u16) {
     // nd -> ngui: reports poweroff progress
     poweroff_progress = 0x09,
     // nd -> ngui: bitcoin core daemon status report
-    bitcoind_report = 0x0a,
+    onchain_report = 0x0a,
     // nd -> ngui: lnd status and stats report
     lightning_report = 0x0b,
     // ngui -> nd: switch sysupdates channel
@@ -87,7 +87,7 @@ pub const Message = union(MessageTag) {
     network_report: NetworkReport,
     get_network_report: GetNetworkReport,
     poweroff_progress: PoweroffProgress,
-    bitcoind_report: BitcoinReport,
+    onchain_report: OnchainReport,
     lightning_report: LightningReport,
     switch_sysupdates: SysupdatesChan,
     settings: Settings,
@@ -117,7 +117,7 @@ pub const Message = union(MessageTag) {
         };
     };
 
-    pub const BitcoinReport = struct {
+    pub const OnchainReport = struct {
         blocks: u64,
         headers: u64,
         timestamp: u64, // unix epoch
@@ -269,7 +269,7 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
         .network_report => try json.stringify(msg.network_report, .{}, data.writer()),
         .get_network_report => try json.stringify(msg.get_network_report, .{}, data.writer()),
         .poweroff_progress => try json.stringify(msg.poweroff_progress, .{}, data.writer()),
-        .bitcoind_report => try json.stringify(msg.bitcoind_report, .{}, data.writer()),
+        .onchain_report => try json.stringify(msg.onchain_report, .{}, data.writer()),
         .lightning_report => try json.stringify(msg.lightning_report, .{}, data.writer()),
         .switch_sysupdates => try json.stringify(msg.switch_sysupdates, .{}, data.writer()),
         .settings => try json.stringify(msg.settings, .{}, data.writer()),

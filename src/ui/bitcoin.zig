@@ -113,7 +113,7 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
 
 /// updates the tab with new data from the report.
 /// the tab must be inited first with initTabPanel.
-pub fn updateTabPanel(rep: comm.Message.BitcoinReport) !void {
+pub fn updateTabPanel(rep: comm.Message.OnchainReport) !void {
     var buf: [512]u8 = undefined;
 
     // blockchain section

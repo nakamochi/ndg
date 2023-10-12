@@ -57,9 +57,9 @@ network_report_ready: bool, // indicates whether the network status is ready to 
 wifi_scan_in_progress: bool = false,
 wpa_save_config_on_connected: bool = false,
 // bitcoin fields
-want_bitcoind_report: bool,
+want_onchain_report: bool,
 bitcoin_timer: time.Timer,
-bitcoin_report_interval: u64 = 1 * time.ns_per_min,
+onchain_report_interval: u64 = 1 * time.ns_per_min,
 // lightning fields
 want_lnd_report: bool,
 lnd_timer: time.Timer,
@@ -111,7 +111,7 @@ pub fn init(opt: InitOpt) !Daemon {
         .want_wifi_scan = false,
         .network_report_ready = true,
         // report bitcoind status immediately on start
-        .want_bitcoind_report = true,
+        .want_onchain_report = true,
         .bitcoin_timer = try time.Timer.start(),
         // report lightning status immediately on start
         .want_lnd_report = true,
@@ -327,12 +327,12 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
         }
     }
 
-    if (self.want_bitcoind_report or self.bitcoin_timer.read() > self.bitcoin_report_interval) {
-        if (self.sendBitcoindReport()) {
+    if (self.want_onchain_report or self.bitcoin_timer.read() > self.onchain_report_interval) {
+        if (self.sendOnchainReport()) {
             self.bitcoin_timer.reset();
-            self.want_bitcoind_report = false;
+            self.want_onchain_report = false;
         } else |err| {
-            logger.err("sendBitcoinReport: {any}", .{err});
+            logger.err("sendOnchainReport: {any}", .{err});
         }
     }
     if (self.want_lnd_report or self.lnd_timer.read() > self.lnd_report_interval) {
@@ -566,7 +566,7 @@ fn readWPACtrlMsg(self: *Daemon) !void {
     }
 }
 
-fn sendBitcoindReport(self: *Daemon) !void {
+fn sendOnchainReport(self: *Daemon) !void {
     var client = bitcoindrpc.Client{
         .allocator = self.allocator,
         .cookiepath = "/ssd/bitcoind/mainnet/.cookie",
@@ -590,7 +590,7 @@ fn sendBitcoindReport(self: *Daemon) !void {
     };
     defer if (balance) |bal| bal.deinit();
 
-    const btcrep: comm.Message.BitcoinReport = .{
+    const btcrep: comm.Message.OnchainReport = .{
         .blocks = bcinfo.value.blocks,
         .headers = bcinfo.value.headers,
         .timestamp = bcinfo.value.time,
@@ -624,7 +624,7 @@ fn sendBitcoindReport(self: *Daemon) !void {
         } else null,
     };
 
-    try comm.write(self.allocator, self.uiwriter, .{ .bitcoind_report = btcrep });
+    try comm.write(self.allocator, self.uiwriter, .{ .onchain_report = btcrep });
 }
 
 fn sendLightningReport(self: *Daemon) !void {
@@ -802,7 +802,7 @@ test "start-stop" {
     });
     daemon.want_settings = false;
     daemon.want_network_report = false;
-    daemon.want_bitcoind_report = false;
+    daemon.want_onchain_report = false;
     daemon.want_lnd_report = false;
 
     try t.expect(daemon.state == .stopped);
@@ -854,7 +854,7 @@ test "start-poweroff" {
     });
     daemon.want_settings = false;
     daemon.want_network_report = false;
-    daemon.want_bitcoind_report = false;
+    daemon.want_onchain_report = false;
     daemon.want_lnd_report = false;
     defer {
         daemon.deinit();
