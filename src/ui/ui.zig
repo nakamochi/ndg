@@ -14,9 +14,16 @@ pub const settings = @import("settings.zig");
 
 const logger = std.log.scoped(.ui);
 
+// defined in src/ui/c/ui.c
+// calls back into nm_create_xxx_panel functions defined here during init.
 extern "c" fn nm_ui_init(disp: *lvgl.LvDisp) c_int;
 
-pub fn init() !void {
+// global allocator set on init.
+// must be set before a call to nm_ui_init.
+var allocator: std.mem.Allocator = undefined;
+
+pub fn init(gpa: std.mem.Allocator) !void {
+    allocator = gpa;
     lvgl.init();
     const disp = try drv.initDisplay();
     drv.initInput() catch |err| {
@@ -47,7 +54,7 @@ export fn nm_create_bitcoin_panel(parent: *lvgl.LvObj) c_int {
 }
 
 export fn nm_create_lightning_panel(parent: *lvgl.LvObj) c_int {
-    lightning.initTabPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
+    lightning.initTabPanel(allocator, lvgl.Container{ .lvobj = parent }) catch |err| {
         logger.err("createLightningPanel: {any}", .{err});
         return -1;
     };

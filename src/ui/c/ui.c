@@ -92,6 +92,16 @@ extern lv_style_t *nm_style_title()
     return &style_title;
 }
 
+/**
+ * a hack to prevent tabview from switching to the next tab
+ * on a scroll event, for example coming from a top layer window.
+ * call this func after deleting all children of an object.
+ */
+extern void preserve_main_active_tab()
+{
+    lv_tabview_set_act(tabview, lv_tabview_get_tab_act(tabview), LV_ANIM_OFF);
+}
+
 static void textarea_event_cb(lv_event_t *e)
 {
     lv_obj_t *textarea = lv_event_get_target(e);

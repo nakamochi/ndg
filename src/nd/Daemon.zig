@@ -41,6 +41,7 @@ state: enum {
     running,
     standby,
     poweroff,
+    wallet_reset,
 },
 
 main_thread: ?std.Thread = null,
@@ -64,13 +65,55 @@ onchain_report_interval: u64 = 1 * time.ns_per_min,
 want_lnd_report: bool,
 lnd_timer: time.Timer,
 lnd_report_interval: u64 = 1 * time.ns_per_min,
+lnd_tls_reset_count: usize = 0,
 
 /// system services actively managed by the daemon.
 /// these are stop'ed during poweroff and their shutdown progress sent to ngui.
 /// initialized in start and never modified again: ok to access without holding self.mu.
-services: []SysService = &.{},
+services: struct {
+    list: []SysService,
+
+    fn stopWait(self: @This(), name: []const u8) !void {
+        for (self.list) |*sv| {
+            if (std.mem.eql(u8, sv.name, name)) {
+                return sv.stopWait();
+            }
+        }
+        return error.NoSuchServiceToStop;
+    }
+
+    fn start(self: @This(), name: []const u8) !void {
+        for (self.list) |*sv| {
+            if (std.mem.eql(u8, sv.name, name)) {
+                return sv.start();
+            }
+        }
+        return error.NoSuchServiceToStart;
+    }
+
+    fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+        for (self.list) |*sv| {
+            sv.deinit();
+        }
+        allocator.free(self.list);
+    }
+} = .{ .list = &.{} },
 
 const Daemon = @This();
+
+const Error = error{
+    InvalidState,
+    WalletResetActive,
+    PoweroffActive,
+    AlreadyStarted,
+    ConnectWifiEmptySSID,
+    MakeWalletUnlockFileFail,
+    LndServiceStopFail,
+    ResetLndFail,
+    GenLndConfigFail,
+    InitLndWallet,
+    UnlockLndWallet,
+};
 
 const InitOpt = struct {
     allocator: std.mem.Allocator,
@@ -91,8 +134,8 @@ pub fn init(opt: InitOpt) !Daemon {
     }
     // the order is important. when powering off, the services are shut down
     // in the same order appended here.
-    try svlist.append(SysService.init(opt.allocator, "lnd", .{ .stop_wait_sec = 600 }));
-    try svlist.append(SysService.init(opt.allocator, "bitcoind", .{ .stop_wait_sec = 600 }));
+    try svlist.append(SysService.init(opt.allocator, SysService.LND, .{ .stop_wait_sec = 600 }));
+    try svlist.append(SysService.init(opt.allocator, SysService.BITCOIND, .{ .stop_wait_sec = 600 }));
 
     const conf = try Config.init(opt.allocator, opt.confpath);
     errdefer conf.deinit();
@@ -103,7 +146,7 @@ pub fn init(opt: InitOpt) !Daemon {
         .uiwriter = opt.uiw,
         .wpa_ctrl = try types.WpaControl.open(opt.wpa),
         .state = .stopped,
-        .services = try svlist.toOwnedSlice(),
+        .services = .{ .list = try svlist.toOwnedSlice() },
         // send persisted settings immediately on start
         .want_settings = true,
         // send a network report right at start without wifi scan to make it faster.
@@ -122,12 +165,9 @@ pub fn init(opt: InitOpt) !Daemon {
 /// releases all associated resources.
 /// the daemon must be stop'ed and wait'ed before deiniting.
 pub fn deinit(self: *Daemon) void {
-    defer self.conf.deinit();
     self.wpa_ctrl.close() catch |err| logger.err("deinit: wpa_ctrl.close: {any}", .{err});
-    for (self.services) |*sv| {
-        sv.deinit();
-    }
-    self.allocator.free(self.services);
+    self.services.deinit(self.allocator);
+    self.conf.deinit();
 }
 
 /// start launches daemon threads and returns immediately.
@@ -138,8 +178,8 @@ pub fn start(self: *Daemon) !void {
     defer self.mu.unlock();
     switch (self.state) {
         .stopped => {}, // continue
-        .poweroff => return error.InPoweroffState,
-        else => return error.AlreadyStarted,
+        .poweroff => return Error.PoweroffActive,
+        else => return Error.AlreadyStarted,
     }
 
     try self.wpa_ctrl.attach();
@@ -193,7 +233,8 @@ fn standby(self: *Daemon) !void {
     defer self.mu.unlock();
     switch (self.state) {
         .standby => {},
-        .stopped, .poweroff => return error.InvalidState,
+        .stopped, .poweroff => return Error.InvalidState,
+        .wallet_reset => return Error.WalletResetActive,
         .running => {
             try screen.backlight(.off);
             self.state = .standby;
@@ -206,8 +247,8 @@ fn wakeup(self: *Daemon) !void {
     self.mu.lock();
     defer self.mu.unlock();
     switch (self.state) {
-        .running => {},
-        .stopped, .poweroff => return error.InvalidState,
+        .running, .wallet_reset => {},
+        .stopped, .poweroff => return Error.InvalidState,
         .standby => {
             try screen.backlight(.on);
             self.state = .running;
@@ -225,7 +266,8 @@ fn beginPoweroff(self: *Daemon) !void {
     defer self.mu.unlock();
     switch (self.state) {
         .poweroff => {}, // already in poweroff mode
-        .stopped => return error.InvalidState,
+        .stopped => return Error.InvalidState,
+        .wallet_reset => return Error.WalletResetActive,
         .running, .standby => {
             self.poweroff_thread = try std.Thread.spawn(.{}, poweroffThread, .{self});
             self.state = .poweroff;
@@ -250,13 +292,13 @@ fn poweroffThread(self: *Daemon) void {
     };
 
     // initiate shutdown of all services concurrently.
-    for (self.services) |*sv| {
+    for (self.services.list) |*sv| {
         sv.stop() catch |err| logger.err("sv stop '{s}': {any}", .{ sv.name, err });
     }
     self.sendPoweroffReport() catch |err| logger.err("sendPoweroffReport: {any}", .{err});
 
     // wait each service until stopped or error.
-    for (self.services) |*sv| {
+    for (self.services.list) |*sv| {
         _ = sv.stopWait() catch {};
         logger.info("{s} sv is now stopped; err={any}", .{ sv.name, sv.lastStopError() });
         self.sendPoweroffReport() catch |err| logger.err("sendPoweroffReport: {any}", .{err});
@@ -311,6 +353,7 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
         self.want_settings = !ok;
     }
 
+    // network stats
     self.readWPACtrlMsg() catch |err| logger.err("readWPACtrlMsg: {any}", .{err});
     if (self.want_wifi_scan) {
         if (self.startWifiScan()) {
@@ -327,6 +370,7 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
         }
     }
 
+    // onchain bitcoin stats
     if (self.want_onchain_report or self.bitcoin_timer.read() > self.onchain_report_interval) {
         if (self.sendOnchainReport()) {
             self.bitcoin_timer.reset();
@@ -335,12 +379,17 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
             logger.err("sendOnchainReport: {any}", .{err});
         }
     }
-    if (self.want_lnd_report or self.lnd_timer.read() > self.lnd_report_interval) {
-        if (self.sendLightningReport()) {
-            self.lnd_timer.reset();
-            self.want_lnd_report = false;
-        } else |err| {
-            logger.err("sendLightningReport: {any}", .{err});
+
+    // lightning stats
+    if (self.state != .wallet_reset) {
+        if (self.want_lnd_report or self.lnd_timer.read() > self.lnd_report_interval) {
+            if (self.sendLightningReport()) {
+                self.lnd_timer.reset();
+                self.want_lnd_report = false;
+            } else |err| {
+                logger.info("sendLightningReport: {!}", .{err});
+                self.processLndReportError(err) catch |err2| logger.err("processLndReportError: {!}", .{err2});
+            }
         }
     }
 }
@@ -363,7 +412,7 @@ fn commThreadLoop(self: *Daemon) void {
             }
             switch (self.state) {
                 .stopped, .poweroff => break :loop,
-                .running, .standby => {
+                .running, .standby, .wallet_reset => {
                     logger.err("commThreadLoop: {any}", .{err});
                     if (err == error.EndOfStream) {
                         // pointless to continue running if comms I/O is broken.
@@ -407,6 +456,27 @@ fn commThreadLoop(self: *Daemon) void {
                     // TODO: send err back to ngui
                 };
             },
+            .lightning_genseed => {
+                self.generateWalletSeed() catch |err| {
+                    logger.err("generateWalletSeed: {!}", .{err});
+                    // TODO: send err back to ngui
+                };
+            },
+            .lightning_init_wallet => |req| {
+                self.initWallet(req) catch |err| {
+                    logger.err("initWallet: {!}", .{err});
+                    // TODO: send err back to ngui
+                };
+            },
+            .lightning_get_ctrlconn => {
+                self.sendLightningPairingConn() catch |err| {
+                    logger.err("sendLightningPairingConn: {!}", .{err});
+                    // TODO: send err back to ngui
+                };
+            },
+            .lightning_reset => {
+                self.resetLndNode() catch |err| logger.err("resetLndNode: {!}", .{err});
+            },
             else => |v| logger.warn("unhandled msg tag {s}", .{@tagName(v)}),
         }
 
@@ -420,9 +490,9 @@ fn commThreadLoop(self: *Daemon) void {
 
 /// sends poweroff progress to uiwriter in comm.Message.PoweroffProgress format.
 fn sendPoweroffReport(self: *Daemon) !void {
-    var svstat = try self.allocator.alloc(comm.Message.PoweroffProgress.Service, self.services.len);
+    var svstat = try self.allocator.alloc(comm.Message.PoweroffProgress.Service, self.services.list.len);
     defer self.allocator.free(svstat);
-    for (self.services, svstat) |*sv, *stat| {
+    for (self.services.list, svstat) |*sv, *stat| {
         stat.* = .{
             .name = sv.name,
             .stopped = sv.status() == .stopped,
@@ -490,7 +560,7 @@ fn reportNetworkStatus(self: *Daemon, opt: ReportNetworkStatusOpt) void {
 /// initiates wifi connection procedure in a separate thread
 fn startConnectWifi(self: *Daemon, ssid: []const u8, password: []const u8) !void {
     if (ssid.len == 0) {
-        return error.ConnectWifiEmptySSID;
+        return Error.ConnectWifiEmptySSID;
     }
     const ssid_copy = try self.allocator.dupe(u8, ssid);
     const pwd_copy = try self.allocator.dupe(u8, password);
@@ -566,6 +636,7 @@ fn readWPACtrlMsg(self: *Daemon) !void {
     }
 }
 
+/// callers must hold self.mu due to self.state read access via fetchOnchainStats.
 fn sendOnchainReport(self: *Daemon) !void {
     const stats = self.fetchOnchainStats() catch |err| {
         switch (err) {
@@ -631,6 +702,7 @@ const OnchainStats = struct {
     balance: ?lndhttp.Client.Result(.walletbalance),
 };
 
+/// call site must hold self.mu due to self.state read access.
 /// callers own returned value.
 fn fetchOnchainStats(self: *Daemon) !OnchainStats {
     var client = bitcoindrpc.Client{
@@ -642,10 +714,14 @@ fn fetchOnchainStats(self: *Daemon) !OnchainStats {
     const mempool = try client.call(.getmempoolinfo, {});
 
     const balance: ?lndhttp.Client.Result(.walletbalance) = blk: { // lndhttp.WalletBalance
+        if (self.state == .wallet_reset) {
+            break :blk null;
+        }
         var lndc = lndhttp.Client.init(.{
             .allocator = self.allocator,
-            .tlscert_path = "/home/lnd/.lnd/tls.cert",
-            .macaroon_ro_path = "/ssd/lnd/data/chain/bitcoin/mainnet/readonly.macaroon",
+            .tlscert_path = Config.LND_TLSCERT_PATH,
+            .macaroon_ro_path = Config.LND_MACAROON_RO_PATH,
+            .macaroon_admin_path = Config.LND_MACAROON_ADMIN_PATH,
         }) catch break :blk null;
         defer lndc.deinit();
         const res = lndc.call(.walletbalance, {}) catch break :blk null;
@@ -662,8 +738,9 @@ fn fetchOnchainStats(self: *Daemon) !OnchainStats {
 fn sendLightningReport(self: *Daemon) !void {
     var client = try lndhttp.Client.init(.{
         .allocator = self.allocator,
-        .tlscert_path = "/home/lnd/.lnd/tls.cert",
-        .macaroon_ro_path = "/ssd/lnd/data/chain/bitcoin/mainnet/readonly.macaroon",
+        .tlscert_path = Config.LND_TLSCERT_PATH,
+        .macaroon_ro_path = Config.LND_MACAROON_RO_PATH,
+        .macaroon_admin_path = Config.LND_MACAROON_ADMIN_PATH,
     });
     defer client.deinit();
 
@@ -801,6 +878,238 @@ fn sendLightningReport(self: *Daemon) !void {
     try comm.write(self.allocator, self.uiwriter, .{ .lightning_report = lndrep });
 }
 
+/// evaluates any error returned from `sendLightningReport`.
+/// callers must hold self.mu.
+fn processLndReportError(self: *Daemon, err: anyerror) !void {
+    const msg_starting: comm.Message = .{ .lightning_error = .{ .code = .not_ready } };
+    const msg_locked: comm.Message = .{ .lightning_error = .{ .code = .locked } };
+    const msg_uninitialized: comm.Message = .{ .lightning_error = .{ .code = .uninitialized } };
+
+    switch (err) {
+        error.ConnectionRefused,
+        error.FileNotFound, // tls cert file missing, not re-generated by lnd yet
+        => return comm.write(self.allocator, self.uiwriter, msg_starting),
+        // old tls cert, refused by our http client
+        std.http.Client.ConnectUnproxiedError.TlsInitializationFailed => {
+            try self.resetLndTlsUnguarded();
+            return error.LndReportRetryLater;
+        },
+        else => {}, // continue
+    }
+
+    // checking wallet status requires no macaroon auth
+    var client = try lndhttp.Client.init(.{ .allocator = self.allocator, .tlscert_path = Config.LND_TLSCERT_PATH });
+    defer client.deinit();
+    const status = client.call(.walletstatus, {}) catch |err2| {
+        switch (err2) {
+            error.TlsInitializationFailed => {
+                try self.resetLndTlsUnguarded();
+                return error.LndReportRetryLater;
+            },
+            else => return err2,
+        }
+    };
+    defer status.deinit();
+    logger.info("processLndReportError: lnd wallet state: {s}", .{@tagName(status.value.state)});
+    return switch (status.value.state) {
+        .NON_EXISTING => {
+            try comm.write(self.allocator, self.uiwriter, msg_uninitialized);
+            self.lnd_timer.reset();
+            self.want_lnd_report = false;
+        },
+        .LOCKED => {
+            try comm.write(self.allocator, self.uiwriter, msg_locked);
+            self.lnd_timer.reset();
+            self.want_lnd_report = false;
+        },
+        .UNLOCKED, .RPC_ACTIVE, .WAITING_TO_START => comm.write(self.allocator, self.uiwriter, msg_starting),
+        // active server indicates the lnd is ready to accept calls. so, the error
+        // must have been due to factors other than unoperational lnd state.
+        .SERVER_ACTIVE => err,
+    };
+}
+
+fn sendLightningPairingConn(self: *Daemon) !void {
+    const tor_rpc = try self.conf.lndConnectWaitMacaroonFile(self.allocator, .tor_rpc);
+    defer self.allocator.free(tor_rpc);
+    const tor_http = try self.conf.lndConnectWaitMacaroonFile(self.allocator, .tor_http);
+    defer self.allocator.free(tor_http);
+    var conn: comm.Message.LightningCtrlConn = &.{
+        .{ .url = tor_rpc, .typ = .lnd_rpc, .perm = .admin },
+        .{ .url = tor_http, .typ = .lnd_http, .perm = .admin },
+    };
+    try comm.write(self.allocator, self.uiwriter, .{ .lightning_ctrlconn = conn });
+}
+
+/// a non-committal seed generator. can be called any number of times.
+fn generateWalletSeed(self: *Daemon) !void {
+    // genseed needs no auth
+    var client = try lndhttp.Client.init(.{ .allocator = self.allocator, .tlscert_path = Config.LND_TLSCERT_PATH });
+    defer client.deinit();
+    const res = try client.call(.genseed, {});
+    defer res.deinit();
+    const msg = comm.Message{ .lightning_genseed_result = res.value.cipher_seed_mnemonic };
+    return comm.write(self.allocator, self.uiwriter, msg);
+}
+
+/// commit req.mnemonic as the new lightning wallet.
+/// this also creates a new unlock password, placing it at `Config.LND_WALLETUNLOCK_PATH`,
+/// and finally generates a new lnd config file to persist the changes.
+fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
+    self.mu.lock();
+    switch (self.state) {
+        .stopped, .poweroff, .wallet_reset => {
+            defer self.mu.unlock();
+            switch (self.state) {
+                .poweroff => return Error.PoweroffActive,
+                .wallet_reset => return Error.WalletResetActive,
+                else => return Error.InvalidState,
+            }
+        },
+        // proceed only when in one of the following states
+        .standby => screen.backlight(.on) catch |err| logger.err("initWallet: backlight on: {!}", .{err}),
+        .running => {},
+    }
+    defer {
+        self.mu.lock();
+        self.state = .running;
+        self.mu.unlock();
+    }
+    self.state = .wallet_reset;
+    self.mu.unlock();
+
+    // generate a new wallet unlock password; used together with seed committal below.
+    var buf: [128]u8 = undefined;
+    const unlock_pwd = self.conf.makeWalletUnlockFile(&buf, 8) catch |err| {
+        logger.err("makeWalletUnlockFile: {!}", .{err});
+        return Error.MakeWalletUnlockFileFail;
+    };
+
+    // commit the seed: initwallet needs no auth
+    logger.info("initwallet: committing new seed and an unlock password", .{});
+    var client = try lndhttp.Client.init(.{ .allocator = self.allocator, .tlscert_path = Config.LND_TLSCERT_PATH });
+    defer client.deinit();
+    const res = client.call(.initwallet, .{ .unlock_password = unlock_pwd, .mnemonic = req.mnemonic }) catch |err| {
+        logger.err("lnd client initwallet: {!}", .{err});
+        return Error.InitLndWallet;
+    };
+    res.deinit(); // unused
+
+    // generate a valid lnd config before unlocking the first time but without auto-unlock.
+    // the latter works only after first unlock - see below.
+    //
+    // important details about a "valid" config is lnd needs correct bitcoind rpc auth,
+    // which historically has been missing at the initial OS image build.
+    logger.info("initwallet: generating lnd config file without auto-unlock", .{});
+    try self.conf.genLndConfig(.{ .autounlock = false });
+
+    // restart the lnd service to pick up the newly generated config above.
+    logger.info("initwallet: restarting lnd", .{});
+    try self.services.stopWait(SysService.LND);
+    try self.services.start(SysService.LND);
+    var timer = try types.Timer.start();
+    while (timer.read() < 10 * time.ns_per_s) {
+        const status = client.call(.walletstatus, {}) catch |err| {
+            logger.info("initwallet: waiting lnd restart: {!}", .{err});
+            std.time.sleep(1 * time.ns_per_s);
+            continue;
+        };
+        defer status.deinit();
+        switch (status.value.state) {
+            .LOCKED => break,
+            else => |t| {
+                logger.info("initwallet: waiting lnd restart: {s}", .{@tagName(t)});
+                std.time.sleep(1 * time.ns_per_s);
+                continue;
+            },
+        }
+    }
+
+    // unlock the wallet for the first time: required after initwallet.
+    // it generates macaroon files and completes a wallet initialization.
+    logger.info("initwallet: unlocking new wallet for the first time", .{});
+    const res2 = client.call(.unlockwallet, .{ .unlock_password = unlock_pwd }) catch |err| {
+        logger.err("lnd client unlockwallet: {!}", .{err});
+        return Error.UnlockLndWallet;
+    };
+    res2.deinit(); // unused
+
+    // same as above genLndConfig but with auto-unlock enabled.
+    // no need to restart lnd: it'll pick up the new config on next boot.
+    logger.info("initwallet: re-generating lnd config with auto-unlock", .{});
+    try self.conf.genLndConfig(.{ .autounlock = true });
+}
+
+/// factory-resets lnd node; wipes out the wallet.
+fn resetLndNode(self: *Daemon) !void {
+    self.mu.lock();
+    switch (self.state) {
+        .stopped, .poweroff, .wallet_reset => {
+            defer self.mu.unlock();
+            switch (self.state) {
+                .poweroff => return Error.PoweroffActive,
+                .wallet_reset => return Error.WalletResetActive,
+                else => return Error.InvalidState,
+            }
+        },
+        // proceed only when in one of the following states
+        .running, .standby => {},
+    }
+    const prevstate = self.state;
+    defer {
+        self.mu.lock();
+        self.state = prevstate;
+        self.mu.unlock();
+    }
+    self.state = .wallet_reset;
+    self.mu.unlock();
+
+    // 1. stop lnd service
+    try self.services.stopWait(SysService.LND);
+
+    // 2. delete all data directories
+    try std.fs.cwd().deleteTree(Config.LND_DATA_DIR);
+    try std.fs.cwd().deleteTree(Config.LND_LOG_DIR);
+    try std.fs.cwd().deleteFile(Config.LND_WALLETUNLOCK_PATH);
+    if (std.fs.path.dirname(Config.LND_TLSCERT_PATH)) |dir| {
+        try std.fs.cwd().deleteTree(dir);
+    }
+    // TODO: reset tor hidden service pubkey?
+
+    // 3. generate a new blank config so lnd can start up again and respond
+    // to status requests.
+    try self.conf.genLndConfig(.{ .autounlock = false });
+
+    // 4. start lnd service
+    try self.services.start(SysService.LND);
+}
+
+/// like resetLndNode but resets only tls certs, nothing else.
+/// callers must acquire self.mu.
+fn resetLndTlsUnguarded(self: *Daemon) !void {
+    if (self.lnd_tls_reset_count > 0) {
+        return error.LndTlsResetCount;
+    }
+    switch (self.state) {
+        .stopped, .poweroff, .wallet_reset => {
+            defer self.mu.unlock();
+            switch (self.state) {
+                .poweroff => return Error.PoweroffActive,
+                .wallet_reset => return Error.WalletResetActive,
+                else => return Error.InvalidState,
+            }
+        },
+        // proceed only when in one of the following states
+        .running, .standby => {},
+    }
+    logger.info("resetting lnd tls certs", .{});
+    try std.fs.cwd().deleteFile(Config.LND_TLSKEY_PATH);
+    try std.fs.cwd().deleteFile(Config.LND_TLSCERT_PATH);
+    try self.services.stopWait(SysService.LND);
+    try self.services.start(SysService.LND);
+    self.lnd_tls_reset_count += 1;
+}
+
 fn switchSysupdates(self: *Daemon, chan: comm.Message.SysupdatesChan) !void {
     const th = try std.Thread.spawn(.{}, switchSysupdatesThread, .{ self, chan });
     th.detach();
@@ -856,8 +1165,8 @@ test "start-stop" {
     try t.expect(!daemon.wpa_ctrl.attached);
     try t.expect(daemon.wpa_ctrl.opened);
 
-    try t.expect(daemon.services.len > 0);
-    for (daemon.services) |*sv| {
+    try t.expect(daemon.services.list.len > 0);
+    for (daemon.services.list) |*sv| {
         try t.expect(!sv.stop_proc.spawned);
         try t.expectEqual(SysService.Status.initial, sv.status());
     }
@@ -902,7 +1211,7 @@ test "start-poweroff" {
     daemon.wait();
     try t.expect(daemon.state == .stopped);
     try t.expect(daemon.poweroff_thread == null);
-    for (daemon.services) |*sv| {
+    for (daemon.services.list) |*sv| {
         try t.expect(sv.stop_proc.spawned);
         try t.expect(sv.stop_proc.waited);
         try t.expectEqual(SysService.Status.stopped, sv.status());

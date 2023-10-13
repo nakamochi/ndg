@@ -1,6 +1,8 @@
 //! lnd lightning HTTP client and utility functions.
 
 const std = @import("std");
+const base64enc = std.base64.standard.Encoder;
+
 const types = @import("types.zig");
 
 /// safe for concurrent use as long as Client.allocator is.
@@ -10,30 +12,43 @@ pub const Client = struct {
     port: u16 = 10010,
     apibase: []const u8, // https://localhost:10010
     macaroon: struct {
-        readonly: []const u8,
+        readonly: ?[]const u8,
         admin: ?[]const u8,
     },
     httpClient: std.http.Client,
 
+    pub const Error = error{
+        LndHttpMissingMacaroon,
+        LndHttpBadStatusCode,
+        LndPayloadWriteFail,
+    };
+
     pub const ApiMethod = enum {
+        // no auth methods
+        genseed, // generate a new wallet seed; non-committing
+        walletstatus, // server/wallet status
+        initwallet, // commit a seed and create a node wallet
+        unlockwallet, // required after successfull initwallet
+        // read-only
         feereport, // fees of all active channels
         getinfo, // general host node info
         getnetworkinfo, // visible graph info
         listchannels, // active channels
         pendingchannels, // pending open/close channels
         walletbalance, // onchain balance
-        walletstatus, // server/wallet status
         // fwdinghistory, getchaninfo, getnodeinfo
-        // genseed, initwallet, unlockwallet
         // watchtower: getinfo, stats, list, add, remove
 
         fn apipath(self: @This()) []const u8 {
             return switch (self) {
                 .feereport => "v1/fees",
+                .genseed => "v1/genseed",
                 .getinfo => "v1/getinfo",
                 .getnetworkinfo => "v1/graph/info",
+                .initwallet => "v1/initwallet",
                 .listchannels => "v1/channels",
                 .pendingchannels => "v1/channels/pending",
+                .unlockwallet => "v1/unlockwallet",
                 .walletbalance => "v1/balance/blockchain",
                 .walletstatus => "v1/state",
             };
@@ -42,6 +57,20 @@ pub const Client = struct {
 
     pub fn MethodArgs(comptime m: ApiMethod) type {
         return switch (m) {
+            .initwallet => struct {
+                unlock_password: []const u8, // min 8 bytes
+                mnemonic: []const []const u8, // 24 words
+                passphrase: ?[]const u8 = null,
+                // TODO: restore an existing wallet:
+                //recovery_window: i32 = 0, // applies to each branch of BIP44 derivation path
+                //channel_backups
+            },
+            .unlockwallet => struct {
+                unlock_password: []const u8, // from initwallet
+                // TODO: restore an existing wallet:
+                //recovery_window: i32 = 0, // applies to each branch of BIP44 derivation path
+                //channel_backups
+            },
             .listchannels => struct {
                 status: ?enum { active, inactive } = null,
                 advert: ?enum { public, private } = null,
@@ -55,10 +84,13 @@ pub const Client = struct {
     pub fn ResultValue(comptime m: ApiMethod) type {
         return switch (m) {
             .feereport => FeeReport,
+            .genseed => GeneratedSeed,
             .getinfo => LndInfo,
             .getnetworkinfo => NetworkInfo,
+            .initwallet => InitedWallet,
             .listchannels => ChannelsList,
             .pendingchannels => PendingList,
+            .unlockwallet => struct {},
             .walletbalance => WalletBalance,
             .walletstatus => WalletStatus,
         };
@@ -69,7 +101,7 @@ pub const Client = struct {
         hostname: []const u8 = "localhost", // must be present in tlscert_path SANs
         port: u16 = 10010, // HTTP API port
         tlscert_path: []const u8, // must contain the hostname in SANs
-        macaroon_ro_path: []const u8, // readonly macaroon path
+        macaroon_ro_path: ?[]const u8 = null, // readonly macaroon path
         macaroon_admin_path: ?[]const u8 = null, // required only for requests mutating lnd state
     };
 
@@ -77,13 +109,14 @@ pub const Client = struct {
     /// must deinit when done.
     pub fn init(opt: InitOpt) !Client {
         var ca = std.crypto.Certificate.Bundle{}; // deinit'ed by http.Client.deinit
-        errdefer ca.deinit(opt.allocator);
         try ca.addCertsFromFilePathAbsolute(opt.allocator, opt.tlscert_path);
+        errdefer ca.deinit(opt.allocator);
+        const mac_ro: ?[]const u8 = if (opt.macaroon_ro_path) |p| try readMacaroonOrNull(opt.allocator, p) else null;
+        errdefer if (mac_ro) |v| opt.allocator.free(v);
+        const mac_admin: ?[]const u8 = if (opt.macaroon_admin_path) |p| try readMacaroonOrNull(opt.allocator, p) else null;
+        errdefer if (mac_admin) |v| opt.allocator.free(v);
         const apibase = try std.fmt.allocPrint(opt.allocator, "https://{s}:{d}", .{ opt.hostname, opt.port });
         errdefer opt.allocator.free(apibase);
-        const mac_ro = try readMacaroon(opt.allocator, opt.macaroon_ro_path);
-        errdefer opt.allocator.free(mac_ro);
-        const mac_admin = if (opt.macaroon_admin_path) |p| try readMacaroon(opt.allocator, p) else null;
         return .{
             .allocator = opt.allocator,
             .apibase = apibase,
@@ -99,10 +132,8 @@ pub const Client = struct {
     pub fn deinit(self: *Client) void {
         self.httpClient.deinit();
         self.allocator.free(self.apibase);
-        self.allocator.free(self.macaroon.readonly);
-        if (self.macaroon.admin) |a| {
-            self.allocator.free(a);
-        }
+        if (self.macaroon.readonly) |ro| self.allocator.free(ro);
+        if (self.macaroon.admin) |a| self.allocator.free(a);
     }
 
     pub fn Result(comptime m: ApiMethod) type {
@@ -116,14 +147,21 @@ pub const Client = struct {
         const opt = std.http.Client.Options{ .handle_redirects = false }; // no redirects in REST API
         var req = try self.httpClient.request(reqinfo.httpmethod, reqinfo.url, reqinfo.headers, opt);
         defer req.deinit();
+        if (reqinfo.payload) |p| {
+            req.transfer_encoding = .{ .content_length = p.len };
+        }
+
         try req.start();
         if (reqinfo.payload) |p| {
-            try req.writer().writeAll(p);
+            req.writer().writeAll(p) catch return Error.LndPayloadWriteFail;
             try req.finish();
         }
         try req.wait();
         if (req.response.status.class() != .success) {
-            return error.LndHttpBadStatusCode;
+            // a structured error reporting in lnd is in a less than desirable state.
+            // https://github.com/lightningnetwork/lnd/issues/5586
+            // TODO: return a more detailed error when the upstream improves.
+            return Error.LndHttpBadStatusCode;
         }
         if (@TypeOf(Result(apimethod)) == void) {
             return; // void response; need no json parsing
@@ -153,12 +191,61 @@ pub const Client = struct {
         errdefer reqinfo.deinit();
         const arena = reqinfo.arena.allocator();
         reqinfo.value = switch (apimethod) {
-            .feereport, .getinfo, .getnetworkinfo, .pendingchannels, .walletbalance, .walletstatus => |m| .{
+            .genseed, .walletstatus => |m| .{
+                .httpmethod = .GET,
+                .url = try std.Uri.parse(try std.fmt.allocPrint(arena, "{s}/{s}", .{ self.apibase, m.apipath() })),
+                .headers = std.http.Headers{ .allocator = arena },
+                .payload = null,
+            },
+            .initwallet => |m| blk: {
+                const payload = p: {
+                    var params: struct {
+                        wallet_password: []const u8, // base64
+                        cipher_seed_mnemonic: []const []const u8,
+                        aezeed_passphrase: ?[]const u8 = null, // base64
+                    } = .{
+                        .wallet_password = try base64EncodeAlloc(arena, args.unlock_password),
+                        .cipher_seed_mnemonic = args.mnemonic,
+                        .aezeed_passphrase = if (args.passphrase) |p| try base64EncodeAlloc(arena, p) else null,
+                    };
+                    var buf = std.ArrayList(u8).init(arena);
+                    try std.json.stringify(params, .{ .emit_null_optional_fields = false }, buf.writer());
+                    break :p try buf.toOwnedSlice();
+                };
+                break :blk .{
+                    .httpmethod = .POST,
+                    .url = try std.Uri.parse(try std.fmt.allocPrint(arena, "{s}/{s}", .{ self.apibase, m.apipath() })),
+                    .headers = std.http.Headers{ .allocator = arena },
+                    .payload = payload,
+                };
+            },
+            .unlockwallet => |m| blk: {
+                const payload = p: {
+                    var params: struct {
+                        wallet_password: []const u8, // base64
+                    } = .{
+                        .wallet_password = try base64EncodeAlloc(arena, args.unlock_password),
+                    };
+                    var buf = std.ArrayList(u8).init(arena);
+                    try std.json.stringify(params, .{ .emit_null_optional_fields = false }, buf.writer());
+                    break :p try buf.toOwnedSlice();
+                };
+                break :blk .{
+                    .httpmethod = .POST,
+                    .url = try std.Uri.parse(try std.fmt.allocPrint(arena, "{s}/{s}", .{ self.apibase, m.apipath() })),
+                    .headers = std.http.Headers{ .allocator = arena },
+                    .payload = payload,
+                };
+            },
+            .feereport, .getinfo, .getnetworkinfo, .pendingchannels, .walletbalance => |m| .{
                 .httpmethod = .GET,
                 .url = try std.Uri.parse(try std.fmt.allocPrint(arena, "{s}/{s}", .{ self.apibase, m.apipath() })),
                 .headers = blk: {
+                    if (self.macaroon.readonly == null) {
+                        return Error.LndHttpMissingMacaroon;
+                    }
                     var h = std.http.Headers{ .allocator = arena };
-                    try h.append(authHeaderName, self.macaroon.readonly);
+                    try h.append(authHeaderName, self.macaroon.readonly.?);
                     break :blk h;
                 },
                 .payload = null,
@@ -184,8 +271,11 @@ pub const Client = struct {
                     break :blk try std.Uri.parse(buf.items); // uri point to the original buf
                 },
                 .headers = blk: {
+                    if (self.macaroon.readonly == null) {
+                        return Error.LndHttpMissingMacaroon;
+                    }
                     var h = std.http.Headers{ .allocator = arena };
-                    try h.append(authHeaderName, self.macaroon.readonly);
+                    try h.append(authHeaderName, self.macaroon.readonly.?);
                     break :blk h;
                 },
                 .payload = null,
@@ -194,13 +284,23 @@ pub const Client = struct {
         return reqinfo;
     }
 
+    /// returns null if file not found.
     /// callers own returned value.
-    fn readMacaroon(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
-        const file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
+    fn readMacaroonOrNull(gpa: std.mem.Allocator, path: []const u8) !?[]const u8 {
+        const file = std.fs.openFileAbsolute(path, .{ .mode = .read_only }) catch |err| switch (err) {
+            error.FileNotFound => return null,
+            else => return err,
+        };
         defer file.close();
-        const cont = try file.readToEndAlloc(gpa, 1024);
-        defer gpa.free(cont);
-        return std.fmt.allocPrint(gpa, "{}", .{std.fmt.fmtSliceHexLower(cont)});
+        const raw = try file.readToEndAlloc(gpa, 1024);
+        defer gpa.free(raw);
+        const hex = try std.fmt.allocPrint(gpa, "{}", .{std.fmt.fmtSliceHexLower(raw)});
+        return hex;
+    }
+
+    fn base64EncodeAlloc(gpa: std.mem.Allocator, v: []const u8) ![]const u8 {
+        var buf = try gpa.alloc(u8, base64enc.calcSize(v.len));
+        return base64enc.encode(buf, v); // always returns a slice of buf.len
     }
 };
 
@@ -325,4 +425,14 @@ pub const WalletStatus = struct {
         SERVER_ACTIVE = 4, // ready to accept calls
         WAITING_TO_START = 255,
     },
+};
+
+/// https://lightning.engineering/api-docs/api/lnd/wallet-unlocker/gen-seed
+pub const GeneratedSeed = struct {
+    cipher_seed_mnemonic: []const []const u8, // 24 words aezeed
+};
+
+/// https://lightning.engineering/api-docs/api/lnd/wallet-unlocker/init-wallet
+pub const InitedWallet = struct {
+    admin_macaroon: []const u8, // base64?
 };

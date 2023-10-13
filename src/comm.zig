@@ -69,11 +69,25 @@ pub const MessageTag = enum(u16) {
     onchain_report = 0x0a,
     // nd -> ngui: lnd status and stats report
     lightning_report = 0x0b,
+    // nd -> ngui: error report when not in a regular running mode
+    lightning_error = 0x0e,
+    // ngui -> nd: call lnd to generate a new seed during initial setup
+    lightning_genseed = 0x0f,
+    // nd -> ngui: the result of genseed
+    lightning_genseed_result = 0x10,
+    // ngui -> nd: proceed with initializing a new or existing wallet
+    lightning_init_wallet = 0x11,
+    // ngui -> nd: request connection URLs for a controller app
+    lightning_get_ctrlconn = 0x12,
+    // nd -> ngui: lightning_get_ctrlconn result
+    lightning_ctrlconn = 0x13,
+    // ngui -> nd: factory reset lnd node; wipes out the wallet
+    lightning_reset = 0x14,
     // ngui -> nd: switch sysupdates channel
     switch_sysupdates = 0x0c,
     // nd -> ngui: all ndg settings
     settings = 0x0d,
-    // next: 0x0e
+    // next: 0x15
 };
 
 /// daemon and gui exchange messages of this type.
@@ -89,6 +103,13 @@ pub const Message = union(MessageTag) {
     poweroff_progress: PoweroffProgress,
     onchain_report: OnchainReport,
     lightning_report: LightningReport,
+    lightning_error: LightningError,
+    lightning_genseed: LightningGenSeed,
+    lightning_genseed_result: []const []const u8,
+    lightning_init_wallet: LightningInitWallet,
+    lightning_get_ctrlconn: void,
+    lightning_ctrlconn: LightningCtrlConn,
+    lightning_reset: void,
     switch_sysupdates: SysupdatesChan,
     settings: Settings,
 
@@ -188,6 +209,38 @@ pub const Message = union(MessageTag) {
         },
     };
 
+    pub const LightningCtrlConn = []const LnCtrlConnItem;
+
+    pub const LnCtrlConnItem = struct {
+        url: []const u8,
+        typ: enum { lnd_rpc, lnd_http },
+        perm: enum { admin }, // TODO: support read-only and invoice-only permissions
+    };
+
+    pub const LightningError = struct {
+        code: enum(u8) {
+            uninitialized, // wallet uninitialized
+            //init_failed, TODO: when .lightning_init_wallet results in an error
+            not_ready, // in a startup mode
+            locked, // wallet locked
+        },
+    };
+
+    /// https://lightning.engineering/api-docs/api/lnd/wallet-unlocker/gen-seed
+    pub const LightningGenSeed = struct {
+        // TODO: support passphrase
+        //passphrase: ?[]const u8,
+    };
+
+    /// https://lightning.engineering/api-docs/api/lnd/wallet-unlocker/init-wallet
+    pub const LightningInitWallet = struct {
+        mnemonic: []const []const u8, // 24 words
+        // TODO: support passphrase
+        //passphrase: ?[]const u8,
+
+        // TODO: support extra fields for restoring an existing wallet, like recovery_window
+    };
+
     pub const SysupdatesChan = enum {
         stable, // master branch in sysupdates
         edge, // dev branch in sysupdates
@@ -226,6 +279,8 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !ParsedMessage {
     const len = try reader.readIntLittle(u64);
     if (len == 0) {
         return switch (tag) {
+            .lightning_get_ctrlconn => .{ .value = .lightning_get_ctrlconn },
+            .lightning_reset => .{ .value = .lightning_reset },
             .ping => .{ .value = .{ .ping = {} } },
             .pong => .{ .value = .{ .pong = {} } },
             .poweroff => .{ .value = .{ .poweroff = {} } },
@@ -235,7 +290,14 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !ParsedMessage {
         };
     }
     switch (tag) {
-        .ping, .pong, .poweroff, .standby, .wakeup => unreachable, // handled above
+        .lightning_get_ctrlconn,
+        .lightning_reset,
+        .ping,
+        .pong,
+        .poweroff,
+        .standby,
+        .wakeup,
+        => unreachable, // handled above
         inline else => |t| {
             var bytes = try allocator.alloc(u8, len);
             defer allocator.free(bytes);
@@ -271,6 +333,13 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
         .poweroff_progress => try json.stringify(msg.poweroff_progress, .{}, data.writer()),
         .onchain_report => try json.stringify(msg.onchain_report, .{}, data.writer()),
         .lightning_report => try json.stringify(msg.lightning_report, .{}, data.writer()),
+        .lightning_error => try json.stringify(msg.lightning_error, .{}, data.writer()),
+        .lightning_genseed => try json.stringify(msg.lightning_genseed, .{}, data.writer()),
+        .lightning_genseed_result => try json.stringify(msg.lightning_genseed_result, .{}, data.writer()),
+        .lightning_init_wallet => try json.stringify(msg.lightning_init_wallet, .{}, data.writer()),
+        .lightning_get_ctrlconn => {}, // zero length payload
+        .lightning_ctrlconn => try json.stringify(msg.lightning_ctrlconn, .{}, data.writer()),
+        .lightning_reset => {}, // zero length payload
         .switch_sysupdates => try json.stringify(msg.switch_sysupdates, .{}, data.writer()),
         .settings => try json.stringify(msg.settings, .{}, data.writer()),
     }
@@ -364,6 +433,8 @@ test "write/read void tags" {
     defer buf.deinit();
 
     const msg = [_]Message{
+        Message.lightning_get_ctrlconn,
+        Message.lightning_reset,
         Message.ping,
         Message.pong,
         Message.poweroff,

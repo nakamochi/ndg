@@ -40,7 +40,7 @@ var last_report: struct {
     mu: std.Thread.Mutex = .{},
     network: ?comm.ParsedMessage = null, // NetworkReport
     onchain: ?comm.ParsedMessage = null, // OnchainReport
-    lightning: ?comm.ParsedMessage = null, // LightningReport
+    lightning: ?comm.ParsedMessage = null, // LightningReport or LightningError
 
     fn deinit(self: *@This()) void {
         self.mu.lock();
@@ -76,7 +76,7 @@ var last_report: struct {
                 }
                 self.onchain = new;
             },
-            .lightning_report => {
+            .lightning_report, .lightning_error => {
                 if (self.lightning) |old| {
                     old.deinit();
                 }
@@ -233,7 +233,19 @@ fn commThreadLoopCycle() !void {
             .network_report,
             .onchain_report,
             .lightning_report,
+            .lightning_error,
             => last_report.replace(msg),
+            .lightning_genseed_result,
+            .lightning_ctrlconn,
+            // TODO: merge standby vs active switch branches
+            => {
+                ui.lightning.updateTabPanel(msg.value) catch |err| logger.err("lightning.updateTabPanel: {any}", .{err});
+                msg.deinit();
+            },
+            .settings => |sett| {
+                ui.settings.update(sett) catch |err| logger.err("settings.update: {any}", .{err});
+                msg.deinit();
+            },
             else => {
                 logger.debug("ignoring {s}: in standby", .{@tagName(msg.value)});
                 msg.deinit();
@@ -256,9 +268,15 @@ fn commThreadLoopCycle() !void {
                 ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
                 last_report.replace(msg);
             },
-            .lightning_report => |rep| {
-                ui.lightning.updateTabPanel(rep) catch |err| logger.err("lightning.updateTabPanel: {any}", .{err});
+            .lightning_report, .lightning_error => {
+                ui.lightning.updateTabPanel(msg.value) catch |err| logger.err("lightning.updateTabPanel: {any}", .{err});
                 last_report.replace(msg);
+            },
+            .lightning_genseed_result,
+            .lightning_ctrlconn,
+            => {
+                ui.lightning.updateTabPanel(msg.value) catch |err| logger.err("lightning.updateTabPanel: {any}", .{err});
+                msg.deinit();
             },
             .settings => |sett| {
                 ui.settings.update(sett) catch |err| logger.err("settings.update: {any}", .{err});
@@ -309,6 +327,11 @@ fn uiThreadLoop() void {
                     if (last_report.onchain) |msg| {
                         ui.bitcoin.updateTabPanel(msg.value.onchain_report) catch |err| {
                             logger.err("bitcoin.updateTabPanel: {any}", .{err});
+                        };
+                    }
+                    if (last_report.lightning) |msg| {
+                        ui.lightning.updateTabPanel(msg.value) catch |err| {
+                            logger.err("lightning.updateTabPanel: {any}", .{err});
                         };
                     }
                 }
@@ -383,7 +406,7 @@ pub fn main() anyerror!void {
     comm.initPipe(gpa, .{ .r = std.io.getStdIn(), .w = std.io.getStdOut() });
 
     // initalizes display, input driver and finally creates the user interface.
-    ui.init() catch |err| {
+    ui.init(gpa) catch |err| {
         logger.err("ui.init: {any}", .{err});
         return err;
     };

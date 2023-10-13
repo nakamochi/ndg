@@ -3,6 +3,18 @@
 const std = @import("std");
 const types = @import("../types.zig");
 
+// known service names
+pub const LND = "lnd";
+pub const BITCOIND = "bitcoind";
+
+const Error = error{
+    SysServiceStopInProgress,
+    SysServiceBadStartCode,
+    SysServiceBadStartTerm,
+    SysServiceBadStopCode,
+    SysServiceBadStopTerm,
+};
+
 allocator: std.mem.Allocator,
 name: []const u8,
 stop_wait_sec: ?u32 = null,
@@ -17,13 +29,15 @@ stop_err: ?anyerror = null,
 /// the .initial value is a temporary solution until service watcher and start
 /// are implemnted: at the moment, SysService can only stop services, nothing else.
 pub const Status = enum(u8) {
-    initial, // TODO: add .running
+    initial, // TODO: get rid of "initial" and infer the actual state
+    started,
     stopping,
     stopped,
 };
 
 const State = union(Status) {
     initial: void,
+    started: std.ChildProcess.Term,
     stopping: void,
     stopped: std.ChildProcess.Term,
 };
@@ -64,6 +78,26 @@ pub fn lastStopError(self: *SysService) ?anyerror {
     return self.stop_err;
 }
 
+/// launches a service start procedure and returns as soon as the startup script
+/// terminates: whether the service actually started successefully is not necessarily
+/// indicated by the function return.
+pub fn start(self: *SysService) !void {
+    self.mu.lock();
+    defer self.mu.unlock();
+    switch (self.stat) {
+        .stopping => return Error.SysServiceStopInProgress,
+        .initial, .started, .stopped => {}, // proceed
+    }
+
+    var proc = types.ChildProcess.init(&.{ "sv", "start", self.name }, self.allocator);
+    const term = try proc.spawnAndWait();
+    self.stat = .{ .started = term };
+    switch (term) {
+        .Exited => |code| if (code != 0) return Error.SysServiceBadStartCode,
+        else => return Error.SysServiceBadStartTerm,
+    }
+}
+
 /// launches a service stop procedure and returns immediately.
 /// callers must invoke stopWait to release all resources used by the stop.
 pub fn stop(self: *SysService) !void {
@@ -71,7 +105,7 @@ pub fn stop(self: *SysService) !void {
     defer self.mu.unlock();
 
     self.stop_err = null;
-    self.spawnStop() catch |err| {
+    self.spawnStopUnguarded() catch |err| {
         self.stop_err = err;
         return err;
     };
@@ -84,7 +118,7 @@ pub fn stopWait(self: *SysService) !void {
     defer self.mu.unlock();
 
     self.stop_err = null;
-    self.spawnStop() catch |err| {
+    self.spawnStopUnguarded() catch |err| {
         self.stop_err = err;
         return err;
     };
@@ -96,10 +130,10 @@ pub fn stopWait(self: *SysService) !void {
     self.stat = .{ .stopped = term };
     switch (term) {
         .Exited => |code| if (code != 0) {
-            self.stop_err = error.SysServiceBadStopCode;
+            self.stop_err = Error.SysServiceBadStopCode;
         },
         else => {
-            self.stop_err = error.SysServiceBadStopTerm;
+            self.stop_err = Error.SysServiceBadStopTerm;
         },
     }
     if (self.stop_err) |err| {
@@ -109,11 +143,11 @@ pub fn stopWait(self: *SysService) !void {
 
 /// actual internal body of SysService.stop: stopWait also uses this.
 /// callers must hold self.mu.
-fn spawnStop(self: *SysService) !void {
+fn spawnStopUnguarded(self: *SysService) !void {
     switch (self.stat) {
         .stopping => return, // already in progress
         // intentionally let .stopped state pass through: can't see any downsides.
-        .initial, .stopped => {},
+        .initial, .started, .stopped => {},
     }
 
     // use arena to simplify stop proc args construction.

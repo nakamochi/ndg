@@ -48,7 +48,6 @@ pub const IoPipe = struct {
     }
 };
 
-// TODO: turns this into a UniqStringList backed by StringArrayHashMap; also see std.BufSet
 pub const StringList = struct {
     l: std.ArrayList([]const u8),
     allocator: std.mem.Allocator,
@@ -62,7 +61,17 @@ pub const StringList = struct {
         };
     }
 
-    pub fn deinit(self: *Self) void {
+    /// duplicates unowned items into the returned list.
+    pub fn fromUnowned(allocator: std.mem.Allocator, unowned: []const []const u8) !Self {
+        var list = Self.init(allocator);
+        errdefer list.deinit();
+        for (unowned) |item| {
+            try list.append(item);
+        }
+        return list;
+    }
+
+    pub fn deinit(self: Self) void {
         for (self.l.items) |a| {
             self.allocator.free(a);
         }

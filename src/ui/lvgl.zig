@@ -162,6 +162,10 @@ pub const LvEvent = opaque {
     pub fn userdata(self: *LvEvent) ?*anyopaque {
         return lv_event_get_user_data(self);
     }
+
+    pub fn stopBubbling(self: *LvEvent) void {
+        lv_event_stop_bubbling(self);
+    }
 };
 
 /// represents lv_disp_t in C.
@@ -350,6 +354,12 @@ pub const BaseObjMethods = struct {
         nm_obj_set_userdata(self.lvobj, data);
     }
 
+    /// updates layout of all children so that functions like `WidgetMethods.contentWidth`
+    /// return correct results, when done in a single LVGL loop iteration.
+    pub fn recalculateLayout(self: anytype) void {
+        lv_obj_update_layout(self.lvobj);
+    }
+
     /// creates a new event handler where cb is called upon event with the filter code.
     /// to make cb called on any event, use EventCode.all filter.
     /// multiple event handlers are called in the same order as they were added.
@@ -361,6 +371,10 @@ pub const BaseObjMethods = struct {
 
 /// methods applicable to visible objects like labels, buttons and containers.
 pub const WidgetMethods = struct {
+    pub fn contentWidth(self: anytype) Coord {
+        return lv_obj_get_content_width(self.lvobj);
+    }
+
     /// sets object horizontal length.
     pub fn setWidth(self: anytype, val: Coord) void {
         lv_obj_set_width(self.lvobj, val);
@@ -553,6 +567,8 @@ pub const FlexLayout = struct {
         cross: AlignCross = .start,
         track: Align = .start,
         all: ?Align = null, // overrides all 3 above
+        width: ?Coord = null,
+        height: ?union(enum) { fixed: Coord, content } = null,
     };
 
     /// creates a new object with flex layout and some default padding.
@@ -563,6 +579,15 @@ pub const FlexLayout = struct {
         lv_obj_remove_style(obj, null, bgsel.value());
         const flex = adopt(obj, flow, opt);
         flex.padColumnDefault();
+        if (opt.width) |w| {
+            flex.setWidth(w);
+        }
+        if (opt.height) |h| {
+            switch (h) {
+                .content => flex.setHeightToContent(),
+                .fixed => |v| flex.setHeight(v),
+            }
+        }
         return flex;
     }
 
@@ -849,7 +874,7 @@ pub const Dropdown = struct {
     }
 
     /// returns selected option as a slice of the buf.
-    /// LVGL's lv_dropdown drawing supports up to 128 chars.
+    /// LVGL's lv_dropdown supports up to 128 chars.
     pub fn getSelectedStr(self: Dropdown, buf: []u8) [:0]const u8 {
         const buflen: u32 = @min(buf.len, std.math.maxInt(u32));
         lv_dropdown_get_selected_str(self.lvobj, buf.ptr, buflen);
@@ -857,6 +882,34 @@ pub const Dropdown = struct {
         const cbuf: [*c]u8 = buf.ptr;
         const name: [:0]const u8 = std.mem.span(cbuf);
         return name;
+    }
+};
+
+pub const QrCode = struct {
+    lvobj: *LvObj,
+
+    pub usingnamespace BaseObjMethods;
+    pub usingnamespace WidgetMethods;
+
+    pub fn new(parent: anytype, size: Coord, data: ?[]const u8) !QrCode {
+        const o = lv_qrcode_create(parent.lvobj, size, Black, White) orelse return error.OutOfMemory;
+        const q = QrCode{ .lvobj = o };
+        errdefer q.destroy();
+        if (data) |d| {
+            try q.setQrData(d);
+        }
+        return q;
+    }
+
+    pub fn setQrData(self: QrCode, data: []const u8) !void {
+        if (data.len > std.math.maxInt(u32)) {
+            return error.QrCodeDataTooLarge;
+        }
+        const len: u32 = @truncate(data.len);
+        const res = lv_qrcode_update(self.lvobj, data.ptr, len);
+        if (res != c.LV_RES_OK) {
+            return error.QrCodeSetData;
+        }
     }
 };
 
@@ -1027,6 +1080,7 @@ extern fn lv_event_get_code(e: *LvEvent) LvEvent.Code;
 extern fn lv_event_get_current_target(e: *LvEvent) *LvObj;
 extern fn lv_event_get_target(e: *LvEvent) *LvObj;
 extern fn lv_event_get_user_data(e: *LvEvent) ?*anyopaque;
+extern fn lv_event_stop_bubbling(e: *LvEvent) void;
 extern fn lv_obj_add_event_cb(obj: *LvObj, cb: LvEvent.Callback, filter: LvEvent.Code, userdata: ?*anyopaque) *LvEvent.Descriptor;
 
 // display and screen functions ----------------------------------------------
@@ -1085,6 +1139,8 @@ extern fn lv_obj_create(parent: ?*LvObj) ?*LvObj;
 extern fn lv_obj_del(obj: *LvObj) void;
 /// deletes children of the obj.
 extern fn lv_obj_clean(obj: *LvObj) void;
+/// recalculates an object layout based on all its children.
+pub extern fn lv_obj_update_layout(obj: *const LvObj) void;
 
 extern fn lv_obj_add_state(obj: *LvObj, c.lv_state_t) void;
 extern fn lv_obj_clear_state(obj: *LvObj, c.lv_state_t) void;
@@ -1096,6 +1152,7 @@ extern fn lv_obj_align(obj: *LvObj, a: c.lv_align_t, x: c.lv_coord_t, y: c.lv_co
 extern fn lv_obj_set_height(obj: *LvObj, h: c.lv_coord_t) void;
 extern fn lv_obj_set_width(obj: *LvObj, w: c.lv_coord_t) void;
 extern fn lv_obj_set_size(obj: *LvObj, w: c.lv_coord_t, h: c.lv_coord_t) void;
+extern fn lv_obj_get_content_width(obj: *const LvObj) c.lv_coord_t;
 
 extern fn lv_obj_set_flex_flow(obj: *LvObj, flow: c.lv_flex_flow_t) void;
 extern fn lv_obj_set_flex_grow(obj: *LvObj, val: u8) void;
@@ -1134,3 +1191,6 @@ extern fn lv_bar_set_range(bar: *LvObj, min: i32, max: i32) void;
 extern fn lv_win_create(parent: *LvObj, header_height: c.lv_coord_t) ?*LvObj;
 extern fn lv_win_add_title(win: *LvObj, title: [*:0]const u8) ?*LvObj;
 extern fn lv_win_get_content(win: *LvObj) *LvObj;
+
+extern fn lv_qrcode_create(parent: *LvObj, size: c.lv_coord_t, dark: Color, light: Color) ?*LvObj;
+extern fn lv_qrcode_update(qrcode: *LvObj, data: *const anyopaque, data_len: u32) c.lv_res_t;

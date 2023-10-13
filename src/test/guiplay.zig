@@ -118,6 +118,25 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
                 } };
                 comm.write(gpa, w, .{ .poweroff_progress = s3 }) catch |err| logger.err("comm.write: {any}", .{err});
             },
+            .lightning_genseed => {
+                time.sleep(2 * time.ns_per_s);
+                comm.write(gpa, w, .{ .lightning_genseed_result = &.{
+                    "ability", "dance", "scatter", "raw",     "fly",    "dentist",  "bar",     "nominee",
+                    "exhaust", "wine",  "snap",    "super",   "cost",   "case",     "coconut", "ticket",
+                    "spread",  "funny", "grain",   "chimney", "aspect", "business", "quiz",    "ginger",
+                } }) catch |err| logger.err("{!}", .{err});
+            },
+            .lightning_init_wallet => |v| {
+                logger.info("mnemonic: {s}", .{v.mnemonic});
+                time.sleep(3 * time.ns_per_s);
+            },
+            .lightning_get_ctrlconn => {
+                var conn: comm.Message.LightningCtrlConn = &.{
+                    .{ .url = "lndconnect://adfkjhadwaepoijsadflkjtrpoijawokjafulkjsadfkjhgjfdskjszd.onion:10009?macaroon=Adasjsadkfljhfjhasdpiuhfiuhawfffoihgpoiadsfjharpoiuhfdsgpoihafdsgpoiheafoiuhasdfhisdufhiuhfewiuhfiuhrfl6prrx", .typ = .lnd_rpc, .perm = .admin },
+                    .{ .url = "lndconnect://adfkjhadwaepoijsadflkjtrpoijawokjafulkjsadfkjhgjfdskjszd.onion:10010?macaroon=Adasjsadkfljhfjhasdpiuhfiuhawfffoihgpoiadsfjharpoiuhfdsgpoihafdsgpoiheafoiuhasdfhisdufhiuhfewiuhfiuhrfl6prrx", .typ = .lnd_http, .perm = .admin },
+                };
+                comm.write(gpa, w, .{ .lightning_ctrlconn = conn }) catch |err| logger.err("{!}", .{err});
+            },
             else => {},
         }
     }
@@ -130,6 +149,8 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
     var sectimer = try time.Timer.start();
     var block_count: u32 = 801365;
     var settings_sent = false;
+
+    var lnd_uninited_sent = false;
 
     while (true) {
         time.sleep(time.ns_per_s);
@@ -184,6 +205,11 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
             },
         };
         comm.write(gpa, w, .{ .onchain_report = btcrep }) catch |err| logger.err("comm.write: {any}", .{err});
+
+        if (!lnd_uninited_sent and block_count % 2 == 0) {
+            comm.write(gpa, w, .{ .lightning_error = .{ .code = .uninitialized } }) catch |err| logger.err("{any}", .{err});
+            lnd_uninited_sent = true;
+        }
 
         if (block_count % 2 == 0) {
             const lndrep: comm.Message.LightningReport = .{
