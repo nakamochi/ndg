@@ -315,11 +315,22 @@ pub fn expectDeepEqual(expected: anytype, actual: @TypeOf(expected)) !void {
     }
 }
 
+pub fn expectSubstring(needle: []const u8, haystack: []const u8) !void {
+    const n = std.mem.count(u8, haystack, needle);
+    try std.testing.expect(n > 0);
+}
+
+pub fn expectNoSubstring(needle: []const u8, haystack: []const u8) !void {
+    const n = std.mem.count(u8, haystack, needle);
+    try std.testing.expect(n == 0);
+}
+
 test {
     _ = @import("nd.zig");
     _ = @import("nd/Daemon.zig");
     _ = @import("nd/SysService.zig");
     _ = @import("ngui.zig");
+    _ = @import("lightning.zig");
 
     std.testing.refAllDecls(@This());
 }

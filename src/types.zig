@@ -9,11 +9,25 @@ pub usingnamespace if (builtin.is_test) struct {
     pub const Timer = tt.TestTimer;
     pub const ChildProcess = tt.TestChildProcess;
     pub const WpaControl = tt.TestWpaControl;
+
+    /// always returns caller's (current process) user/group IDs.
+    /// atm works only on linux via getuid syscalls.
+    pub fn getUserInfo(name: []const u8) !std.process.UserInfo {
+        _ = name;
+        return .{
+            .uid = std.os.linux.getuid(),
+            .gid = std.os.linux.getgid(),
+        };
+    }
 } else struct {
     // regular types for production code.
     pub const Timer = std.time.Timer;
     pub const ChildProcess = std.ChildProcess;
     pub const WpaControl = nif.wpa.Control;
+
+    pub fn getUserInfo(name: []const u8) !std.process.UserInfo {
+        return std.process.getUserInfo(name);
+    }
 };
 
 /// prefer this type over the std.ArrayList(u8) just to ensure consistency

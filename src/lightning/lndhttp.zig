@@ -3,7 +3,7 @@
 const std = @import("std");
 const base64enc = std.base64.standard.Encoder;
 
-const types = @import("types.zig");
+const types = @import("../types.zig");
 
 /// safe for concurrent use as long as Client.allocator is.
 pub const Client = struct {

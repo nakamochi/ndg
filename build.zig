@@ -21,6 +21,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const libnif = libnif_dep.artifact("nif");
+    // ini file format parser
+    const libini = b.addModule("ini", .{ .source_file = .{ .path = "lib/ini/src/ini.zig" } });
 
     const common_cflags = .{
         "-Wall",
@@ -119,6 +121,7 @@ pub fn build(b: *std.Build) void {
         });
         tests.addOptions("build_options", buildopts);
         tests.addModule("nif", libnif_dep.module("nif"));
+        tests.addModule("ini", libini);
         tests.linkLibrary(libnif);
 
         const run_tests = b.addRunArtifact(tests);

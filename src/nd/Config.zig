@@ -2,6 +2,8 @@
 //! the structure is defined in `Data`.
 
 const std = @import("std");
+const lightning = @import("../lightning.zig");
+const types = @import("../types.zig");
 
 const logger = std.log.scoped(.config);
 
@@ -270,7 +272,7 @@ pub fn lndConnectWaitMacaroonFile(self: Config, allocator: std.mem.Allocator, ty
 /// returns the bytes printed to outbuf.
 pub fn makeWalletUnlockFile(self: Config, outbuf: []u8, comptime raw_size: usize) ![]const u8 {
     const filepath = LND_WALLETUNLOCK_PATH;
-    const lnduser = try std.process.getUserInfo(LND_OS_USER);
+    const lnduser = try types.getUserInfo(LND_OS_USER);
 
     const allocator = self.arena.child_allocator;
     const opt = .{ .mode = 0o400 };
@@ -290,64 +292,70 @@ pub fn makeWalletUnlockFile(self: Config, outbuf: []u8, comptime raw_size: usize
     return hex;
 }
 
-/// creates or overwrites existing lnd config file at `LND_CONF_PATH`.
-pub fn genLndConfig(self: Config, opt: struct { autounlock: bool }) !void {
-    const confpath = LND_CONF_PATH;
-    const lnduser = try std.process.getUserInfo(LND_OS_USER);
+/// options for genLndConfig.
+pub const LndConfOpt = struct {
+    autounlock: bool,
+    path: ?[]const u8 = null, // defaults to LND_CONF_PATH
+};
+
+/// creates or overwrites existing lnd config file on disk.
+pub fn genLndConfig(self: Config, opt: LndConfOpt) !void {
+    const confpath = opt.path orelse LND_CONF_PATH;
+    const lnduser = try types.getUserInfo(LND_OS_USER);
 
     const allocator = self.arena.child_allocator;
-    const file = try std.io.BufferedAtomicFile.create(allocator, std.fs.cwd(), confpath, .{ .mode = 0o400 });
-    defer file.destroy(); // frees resources; does NOT delete the file
-    const w = file.writer();
-
-    // main app settings
-    try w.writeAll("[Application Options]\n");
-    try w.writeAll("debuglevel=info\n");
-    try w.writeAll("maxpendingchannels=10\n");
-    try w.writeAll("maxlogfiles=3\n");
-    try w.writeAll("listen=[::]:9735\n"); // or 0.0.0.0:9735
-    try w.writeAll("rpclisten=0.0.0.0:10009\n");
-    try w.writeAll("restlisten=0.0.0.0:10010\n"); // TODO: replace with 127.0.0.1 and no-rest-tls=true?
-    try std.fmt.format(w, "alias={s}\n", .{"nakamochi"}); // TODO: make alias configurable
-    try std.fmt.format(w, "datadir={s}\n", .{LND_DATA_DIR});
-    try std.fmt.format(w, "logdir={s}\n", .{LND_LOG_DIR});
+    var conf = try lightning.LndConf.init(allocator);
+    defer conf.deinit();
+    var sec = try conf.appendDefaultSection();
+    try sec.setPropStr("debuglevel", "info");
+    try sec.setPropStr("maxpendingchannels", "10");
+    try sec.setPropStr("maxlogfiles", "3");
+    try sec.setPropStr("listen", "[::]:9735"); // or 0.0.0.0:9735
+    try sec.setPropStr("rpclisten", "0.0.0.0:10009");
+    try sec.setPropStr("restlisten", "0.0.0.0:10010");
+    try sec.setPropStr("alias", "nakamochi"); // TODO: make alias configurable
+    try sec.setPropStr("datadir", LND_DATA_DIR);
+    try sec.setPropStr("logdir", LND_LOG_DIR);
     if (self.static.lnd_tor_hostname) |torhost| {
-        try std.fmt.format(w, "tlsextradomain={s}\n", .{torhost});
-        try std.fmt.format(w, "externalhosts={s}\n", .{torhost});
+        try sec.setPropStr("tlsextradomain", torhost);
+        try sec.setPropStr("externalhosts", torhost);
     }
     if (opt.autounlock) {
-        try std.fmt.format(w, "wallet-unlock-password-file={s}\n", .{LND_WALLETUNLOCK_PATH});
+        try sec.setPropStr("wallet-unlock-password-file", LND_WALLETUNLOCK_PATH);
     }
 
     // bitcoin chain settings
-    try w.writeAll("\n[bitcoin]\n");
-    try std.fmt.format(w, "bitcoin.chaindir={s}/chain/mainnet\n", .{LND_DATA_DIR});
-    try w.writeAll("bitcoin.active=true\n");
-    try w.writeAll("bitcoin.mainnet=True\n");
-    try w.writeAll("bitcoin.testnet=False\n");
-    try w.writeAll("bitcoin.regtest=False\n");
-    try w.writeAll("bitcoin.simnet=False\n");
-    try w.writeAll("bitcoin.node=bitcoind\n");
-    try w.writeAll("\n[bitcoind]\n");
-    try w.writeAll("bitcoind.zmqpubrawblock=tcp://127.0.0.1:8331\n");
-    try w.writeAll("bitcoind.zmqpubrawtx=tcp://127.0.0.1:8330\n");
-    try w.writeAll("bitcoind.rpchost=127.0.0.1\n");
-    try w.writeAll("bitcoind.rpcuser=rpc\n");
+    sec = try conf.appendSection("bitcoin");
+    try sec.setPropFmt("bitcoin.chaindir", "{s}/chain/mainnet", .{LND_DATA_DIR});
+    try sec.setPropStr("bitcoin.active", "true");
+    try sec.setPropStr("bitcoin.mainnet", "true");
+    try sec.setPropStr("bitcoin.testnet", "false");
+    try sec.setPropStr("bitcoin.regtest", "false");
+    try sec.setPropStr("bitcoin.simnet", "false");
+    try sec.setPropStr("bitcoin.node", "bitcoind");
+    sec = try conf.appendSection("bitcoind");
+    try sec.setPropStr("bitcoind.zmqpubrawblock", "tcp://127.0.0.1:8331");
+    try sec.setPropStr("bitcoind.zmqpubrawtx", "tcp://127.0.0.1:8330");
+    try sec.setPropStr("bitcoind.rpchost", "127.0.0.1");
+    try sec.setPropStr("bitcoind.rpcuser", "rpc");
     if (self.static.bitcoind_rpc_pass) |rpcpass| {
-        try std.fmt.format(w, "bitcoind.rpcpass={s}\n", .{rpcpass});
+        try sec.setPropStr("bitcoind.rpcpass", rpcpass);
     } else {
         return error.GenLndConfigNoBitcoindRpcPass;
     }
 
     // other settings
-    try w.writeAll("\n[autopilot]\n");
-    try w.writeAll("autopilot.active=false\n");
-    try w.writeAll("\n[tor]\n");
-    try w.writeAll("tor.active=true\n");
-    try w.writeAll("tor.skip-proxy-for-clearnet-targets=true\n");
+    sec = try conf.appendSection("autopilot");
+    try sec.setPropStr("autopilot.active", "false");
+    sec = try conf.appendSection("tor");
+    try sec.setPropStr("tor.active", "true");
+    try sec.setPropStr("tor.skip-proxy-for-clearnet-targets", "true");
 
-    // persist the file in the correct location.
-    try file.finish();
+    // dump config into the file.
+    const file = try std.io.BufferedAtomicFile.create(allocator, std.fs.cwd(), confpath, .{ .mode = 0o400 });
+    defer file.destroy(); // frees resources; does NOT delete the file
+    try conf.dumpWriter(file.writer());
+    try file.finish(); // persist the file in the correct location
 
     // change file ownership to that of the lnd system user.
     const f = try std.fs.cwd().openFile(confpath, .{});
@@ -355,7 +363,7 @@ pub fn genLndConfig(self: Config, opt: struct { autounlock: bool }) !void {
     try f.chown(lnduser.uid, lnduser.gid);
 }
 
-test "init existing" {
+test "ndconfig: init existing" {
     const t = std.testing;
     const tt = @import("../test.zig");
 
@@ -375,7 +383,7 @@ test "init existing" {
     try t.expectEqualStrings("/sysupdates/run.sh", conf.data.sysrunscript);
 }
 
-test "init null" {
+test "ndconfig: init null" {
     const t = std.testing;
 
     const conf = try init(t.allocator, "/non/existent/config/file");
@@ -385,7 +393,7 @@ test "init null" {
     try t.expectEqualStrings(SYSUPDATES_RUN_SCRIPT_PATH, conf.data.sysrunscript);
 }
 
-test "dump" {
+test "ndconfig: dump" {
     const t = std.testing;
     const tt = @import("../test.zig");
 
@@ -416,7 +424,7 @@ test "dump" {
     try t.expectEqualStrings("runscript.sh", parsed.value.sysrunscript);
 }
 
-test "switch sysupdates and infer" {
+test "ndconfig: switch sysupdates and infer" {
     const t = std.testing;
     const tt = @import("../test.zig");
 
@@ -448,11 +456,11 @@ test "switch sysupdates and infer" {
     try t.expectEqual(SysupdatesChannel.dev, inferSysupdatesChannel(cronscript));
 }
 
-test "switch sysupdates with .run=true" {
+test "ndconfig: switch sysupdates with .run=true" {
     const t = std.testing;
     const tt = @import("../test.zig");
 
-    // no arena deinit: expecting Config to
+    // no arena deinit here: expecting Config to auto-deinit.
     var conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
     conf_arena.* = std.heap.ArenaAllocator.init(std.testing.allocator);
     var tmp = try tt.TempDir.create();
@@ -491,4 +499,53 @@ fn testLoadConfigData(path: []const u8) !std.json.Parsed(Data) {
     defer allocator.free(bytes);
     const jopt = .{ .ignore_unknown_fields = true, .allocate = .alloc_always };
     return try std.json.parseFromSlice(Data, allocator, bytes, jopt);
+}
+
+test "ndconfig: genLndConfig" {
+    const t = std.testing;
+    const tt = @import("../test.zig");
+
+    // Config auto-deinits the arena.
+    var conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+    conf_arena.* = std.heap.ArenaAllocator.init(std.testing.allocator);
+    var tmp = try tt.TempDir.create();
+    defer tmp.cleanup();
+
+    var conf = Config{
+        .arena = conf_arena,
+        .confpath = undefined, // unused
+        .data = .{
+            .syschannel = .master, // unused
+            .syscronscript = undefined, // unused
+            .sysrunscript = undefined, // unused
+        },
+        .static = .{
+            .lnd_tor_hostname = "test.onion",
+            .bitcoind_rpc_pass = "test secret",
+        },
+    };
+    defer conf.deinit();
+
+    const confpath = try tmp.join(&.{"lndconf.ini"});
+    try conf.genLndConfig(.{ .autounlock = false, .path = confpath });
+
+    const bytes = try std.fs.cwd().readFileAlloc(t.allocator, confpath, 1 << 20);
+    defer t.allocator.free(bytes);
+    try tt.expectSubstring("tlsextradomain=test.onion\n", bytes);
+    try tt.expectSubstring("externalhosts=test.onion\n", bytes);
+    try tt.expectNoSubstring("wallet-unlock-password-file", bytes);
+    try tt.expectSubstring("bitcoind.rpcpass=test secret\n", bytes);
+
+    try conf.genLndConfig(.{ .autounlock = true, .path = confpath });
+    const bytes2 = try std.fs.cwd().readFileAlloc(t.allocator, confpath, 1 << 20);
+    defer t.allocator.free(bytes2);
+    try tt.expectSubstring("wallet-unlock-password-file=", bytes2);
+
+    const lndconf = try lightning.LndConf.load(t.allocator, confpath);
+    defer lndconf.deinit();
+    try t.expect(lndconf.mainSection() != null);
+    try t.expect(lndconf.findSection("bitcoin") != null);
+    try t.expect(lndconf.findSection("bitcoind") != null);
+    try t.expect(lndconf.findSection("autopilot") != null);
+    try t.expect(lndconf.findSection("tor") != null);
 }
