@@ -328,9 +328,9 @@ pub fn expectNoSubstring(needle: []const u8, haystack: []const u8) !void {
 test {
     _ = @import("nd.zig");
     _ = @import("nd/Daemon.zig");
-    _ = @import("nd/SysService.zig");
     _ = @import("ngui.zig");
     _ = @import("lightning.zig");
+    _ = @import("sys.zig");
 
     std.testing.refAllDecls(@This());
 }

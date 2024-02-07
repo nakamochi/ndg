@@ -85,9 +85,11 @@ pub const MessageTag = enum(u16) {
     lightning_reset = 0x14,
     // ngui -> nd: switch sysupdates channel
     switch_sysupdates = 0x0c,
+    // ngui -> nd: rename node, both hostname and lnd alias
+    set_nodename = 0x15,
     // nd -> ngui: all ndg settings
     settings = 0x0d,
-    // next: 0x15
+    // next: 0x16
 };
 
 /// daemon and gui exchange messages of this type.
@@ -111,6 +113,7 @@ pub const Message = union(MessageTag) {
     lightning_ctrlconn: LightningCtrlConn,
     lightning_reset: void,
     switch_sysupdates: SysupdatesChan,
+    set_nodename: []const u8,
     settings: Settings,
 
     pub const WifiConnect = struct {
@@ -247,6 +250,7 @@ pub const Message = union(MessageTag) {
     };
 
     pub const Settings = struct {
+        hostname: []const u8, // see .set_nodename
         sysupdates: struct {
             channel: SysupdatesChan,
         },
@@ -341,6 +345,7 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
         .lightning_ctrlconn => try json.stringify(msg.lightning_ctrlconn, .{}, data.writer()),
         .lightning_reset => {}, // zero length payload
         .switch_sysupdates => try json.stringify(msg.switch_sysupdates, .{}, data.writer()),
+        .set_nodename => try json.stringify(msg.set_nodename, .{}, data.writer()),
         .settings => try json.stringify(msg.settings, .{}, data.writer()),
     }
     if (data.items.len > std.math.maxInt(u64)) {

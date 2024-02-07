@@ -21,7 +21,7 @@ const Config = @import("Config.zig");
 const lndhttp = @import("../lightning.zig").lndhttp;
 const network = @import("network.zig");
 const screen = @import("../ui/screen.zig");
-const SysService = @import("SysService.zig");
+const sys = @import("../sys.zig");
 const types = @import("../types.zig");
 
 const logger = std.log.scoped(.daemon);
@@ -67,11 +67,12 @@ lnd_timer: time.Timer,
 lnd_report_interval: u64 = 1 * time.ns_per_min,
 lnd_tls_reset_count: usize = 0,
 
+// TODO: move this to a sys.ServiceList
 /// system services actively managed by the daemon.
 /// these are stop'ed during poweroff and their shutdown progress sent to ngui.
 /// initialized in start and never modified again: ok to access without holding self.mu.
 services: struct {
-    list: []SysService,
+    list: []sys.Service,
 
     fn stopWait(self: @This(), name: []const u8) !void {
         for (self.list) |*sv| {
@@ -127,15 +128,15 @@ const InitOpt = struct {
 /// and a filesystem path to WPA control socket.
 /// callers must deinit when done.
 pub fn init(opt: InitOpt) !Daemon {
-    var svlist = std.ArrayList(SysService).init(opt.allocator);
+    var svlist = std.ArrayList(sys.Service).init(opt.allocator);
     errdefer {
         for (svlist.items) |*sv| sv.deinit();
         svlist.deinit();
     }
     // the order is important. when powering off, the services are shut down
     // in the same order appended here.
-    try svlist.append(SysService.init(opt.allocator, SysService.LND, .{ .stop_wait_sec = 600 }));
-    try svlist.append(SysService.init(opt.allocator, SysService.BITCOIND, .{ .stop_wait_sec = 600 }));
+    try svlist.append(sys.Service.init(opt.allocator, sys.Service.LND, .{ .stop_wait_sec = 600 }));
+    try svlist.append(sys.Service.init(opt.allocator, sys.Service.BITCOIND, .{ .stop_wait_sec = 600 }));
 
     const conf = try Config.init(opt.allocator, opt.confpath);
     errdefer conf.deinit();
@@ -334,8 +335,9 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
 
     if (self.want_settings) {
         const ok = self.conf.safeReadOnly(struct {
-            fn f(conf: Config.Data) bool {
+            fn f(conf: Config.Data, static: Config.StaticData) bool {
                 const msg: comm.Message.Settings = .{
+                    .hostname = static.hostname,
                     .sysupdates = .{
                         .channel = switch (conf.syschannel) {
                             .dev => .edge,
@@ -453,6 +455,12 @@ fn commThreadLoop(self: *Daemon) void {
                 logger.info("switching sysupdates channel to {s}", .{@tagName(chan)});
                 self.switchSysupdates(chan) catch |err| {
                     logger.err("switchSysupdates: {any}", .{err});
+                    // TODO: send err back to ngui
+                };
+            },
+            .set_nodename => |newname| {
+                self.setNodename(newname) catch |err| {
+                    logger.err("setNodename: {!}", .{err});
                     // TODO: send err back to ngui
                 };
             },
@@ -1005,8 +1013,8 @@ fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
 
     // restart the lnd service to pick up the newly generated config above.
     logger.info("initwallet: restarting lnd", .{});
-    try self.services.stopWait(SysService.LND);
-    try self.services.start(SysService.LND);
+    try self.services.stopWait(sys.Service.LND);
+    try self.services.start(sys.Service.LND);
     var timer = try types.Timer.start();
     while (timer.read() < 10 * time.ns_per_s) {
         const status = client.call(.walletstatus, {}) catch |err| {
@@ -1065,7 +1073,7 @@ fn resetLndNode(self: *Daemon) !void {
     self.mu.unlock();
 
     // 1. stop lnd service
-    try self.services.stopWait(SysService.LND);
+    try self.services.stopWait(sys.Service.LND);
 
     // 2. delete all data directories
     try std.fs.cwd().deleteTree(Config.LND_DATA_DIR);
@@ -1081,7 +1089,7 @@ fn resetLndNode(self: *Daemon) !void {
     try self.conf.genLndConfig(.{ .autounlock = false });
 
     // 4. start lnd service
-    try self.services.start(SysService.LND);
+    try self.services.start(sys.Service.LND);
 }
 
 /// like resetLndNode but resets only tls certs, nothing else.
@@ -1105,8 +1113,8 @@ fn resetLndTlsUnguarded(self: *Daemon) !void {
     logger.info("resetting lnd tls certs", .{});
     try std.fs.cwd().deleteFile(Config.LND_TLSKEY_PATH);
     try std.fs.cwd().deleteFile(Config.LND_TLSCERT_PATH);
-    try self.services.stopWait(SysService.LND);
-    try self.services.start(SysService.LND);
+    try self.services.stopWait(sys.Service.LND);
+    try self.services.start(sys.Service.LND);
     self.lnd_tls_reset_count += 1;
 }
 
@@ -1128,6 +1136,85 @@ fn switchSysupdatesThread(self: *Daemon, chan: comm.Message.SysupdatesChan) void
     self.mu.lock();
     defer self.mu.unlock();
     self.want_settings = true;
+}
+
+/// reconfigures hostname and lnd alias in a detached thread.
+/// the procedure is not atomic and may leave names in inconsistent state.
+///
+/// `newname` must not exceed max hostname length on the running system.
+/// ascii control characters are ignored except for \n, \t and \r which are
+/// replaced by a space. while utf8 codepoints are preserved in lnd alias,
+/// they are removed when setting hostname.
+///
+/// required `newname` lifetime is only until the function returns.
+fn setNodename(self: *Daemon, newname: []const u8) !void {
+    // newly alloc'ed namesan is freed in the detached thread.
+    const namesan = try allocSanitizeNodename(self.allocator, newname);
+    const th = try std.Thread.spawn(.{}, setNodenameThread, .{ self, namesan });
+    th.detach();
+}
+
+/// owns `newname` and frees all resources using `self.allocator`.
+fn setNodenameThread(self: *Daemon, newname: []const u8) void {
+    defer self.allocator.free(newname);
+    self.setNodenameInternal(newname) catch |err| {
+        logger.err("setNodenameIternal: {!}", .{err});
+        // TODO: send err back to ngui
+    };
+}
+
+/// assumes `newname` is sanitized for lnd alias.
+/// the args must be alive until the function return.
+fn setNodenameInternal(self: *Daemon, newname: []const u8) !void {
+    // change lnd alias
+    var mut = try self.conf.beginMutateLndConf(.{});
+    defer {
+        mut.finish(); // relinquish concurrent access guard and resources
+        logger.debug("exiting setNodenameInternal thread", .{});
+    }
+    if (!std.mem.eql(u8, newname, mut.lndconf.alias())) {
+        try mut.lndconf.setAlias(newname);
+        try mut.persist(); // store config changes on disk
+        try self.services.stopWait(sys.Service.LND);
+        try self.services.start(sys.Service.LND);
+    }
+    logger.debug("changed lnd alias to {s}", .{newname});
+
+    // change the hostname
+    try self.conf.setHostname(newname);
+    logger.debug("changed hostname to {s}", .{newname});
+
+    // notify the UI
+    self.mu.lock();
+    self.want_settings = true;
+    self.mu.unlock();
+}
+
+/// replaces whitespace with space literal and ignores ascii control chars.
+/// caller owns returned value.
+fn allocSanitizeNodename(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    if (name.len == 0 or try std.unicode.utf8CountCodepoints(name) > std.os.HOST_NAME_MAX) {
+        return error.InvalidNodenameLength;
+    }
+    var sanitized = try std.ArrayList(u8).initCapacity(allocator, name.len);
+    defer sanitized.deinit();
+    var it = (try std.unicode.Utf8View.init(name)).iterator();
+    while (it.nextCodepointSlice()) |s| {
+        if (s.len == 1) switch (s[0]) {
+            // replace whitespace chars with a space literal
+            '\t', '\n', '\r', std.ascii.control_code.vt, std.ascii.control_code.ff => try sanitized.append(' '),
+            else => |c| {
+                // ignore control ascii
+                if (std.ascii.isControl(c)) continue;
+                try sanitized.append(c);
+            },
+        } else {
+            // leave utf8 codepoints as is
+            try sanitized.appendSlice(s);
+        }
+    }
+    const trimmed = std.mem.trim(u8, sanitized.items, &std.ascii.whitespace);
+    return allocator.dupe(u8, trimmed);
 }
 
 test "start-stop" {
@@ -1168,7 +1255,7 @@ test "start-stop" {
     try t.expect(daemon.services.list.len > 0);
     for (daemon.services.list) |*sv| {
         try t.expect(!sv.stop_proc.spawned);
-        try t.expectEqual(SysService.Status.initial, sv.status());
+        try t.expectEqual(sys.Service.Status.initial, sv.status());
     }
 
     daemon.deinit();
@@ -1214,7 +1301,7 @@ test "start-poweroff" {
     for (daemon.services.list) |*sv| {
         try t.expect(sv.stop_proc.spawned);
         try t.expect(sv.stop_proc.waited);
-        try t.expectEqual(SysService.Status.stopped, sv.status());
+        try t.expectEqual(sys.Service.Status.stopped, sv.status());
     }
 
     const msg1 = try comm.read(arena, gui_reader);

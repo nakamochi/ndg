@@ -24,6 +24,7 @@ var allocator: std.mem.Allocator = undefined;
 
 pub fn init(gpa: std.mem.Allocator) !void {
     allocator = gpa;
+    settings.allocator = gpa;
     lvgl.init();
     const disp = try drv.initDisplay();
     drv.initInput() catch |err| {
@@ -59,6 +60,14 @@ export fn nm_create_lightning_panel(parent: *lvgl.LvObj) c_int {
         return -1;
     };
     return 0;
+}
+
+export fn nm_create_settings_nodename(parent: *lvgl.LvObj) ?*lvgl.LvObj {
+    const card = settings.initNodenamePanel(lvgl.Container{ .lvobj = parent }) catch |err| {
+        logger.err("initNodenamePanel: {any}", .{err});
+        return null;
+    };
+    return card.lvobj;
 }
 
 export fn nm_create_settings_sysupdates(parent: *lvgl.LvObj) ?*lvgl.LvObj {

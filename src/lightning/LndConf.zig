@@ -17,6 +17,7 @@ arena: *std.heap.ArenaAllocator,
 // case-insensitive default group name according to source doc comments
 // at github.com/jessevdk/go-flags
 pub const MainSection = "application options";
+pub const AliasKey = "alias";
 
 // a section key/value pairs (properties) followed by its declaration
 // in square brackets like "[section name]".
@@ -141,7 +142,7 @@ pub fn loadReader(allocator: std.mem.Allocator, r: anytype) !LndConf {
             .section => |name| currsect = try conf.appendSection(name),
             .property => |kv| {
                 if (currsect == null) {
-                    currsect = try conf.appendSection(MainSection);
+                    currsect = try conf.appendDefaultSection();
                 }
                 try currsect.?.appendPropStr(kv.key, kv.value);
             },
@@ -179,10 +180,9 @@ pub fn appendDefaultSection(self: *LndConf) !*Section {
 /// the section name ascii is converted to lower case.
 pub fn appendSection(self: *LndConf, name: []const u8) !*Section {
     const alloc = self.arena.allocator();
-    var name_dup = try alloc.dupe(u8, name);
-    toLower(name_dup);
+    var low_name = try std.ascii.allocLowerString(alloc, name);
     try self.sections.append(.{
-        .name = name_dup,
+        .name = low_name,
         .props = std.StringArrayHashMap(PropValue).init(alloc),
         .alloc = alloc,
     });
@@ -204,13 +204,23 @@ pub fn findSection(self: *const LndConf, name: []const u8) ?*Section {
     return null;
 }
 
-fn toLower(s: []u8) void {
-    for (s, 0..) |c, i| {
-        switch (c) {
-            'A'...'Z' => s[i] = c | 0b00100000,
-            else => {},
-        }
-    }
+/// returns alias field value from the main section.
+/// the slice points to a memory owned by LndConf. the callers need not deallocate.
+/// if there's no alias defined, returns empty slice.
+pub fn alias(self: LndConf) []const u8 {
+    const main = self.mainSection() orelse return "";
+    const val = main.props.get(AliasKey) orelse return "";
+    return switch (val) {
+        .str => |s| s,
+        .astr => |a| if (a.len > 0) a[0] else "",
+    };
+}
+
+/// sets alias field value to the new name.
+/// the arg slice is owned by the caller and can be freed upon function return.
+pub fn setAlias(self: *LndConf, newname: []const u8) !void {
+    var main = self.mainSection() orelse try self.appendDefaultSection();
+    try main.setPropStr(AliasKey, newname);
 }
 
 test "lnd: conf load dump" {
@@ -285,4 +295,35 @@ test "lnd: conf append and dump" {
         \\
     ;
     try t.expectEqualStrings(want_conf, buf.items);
+}
+
+test "lnd: conf alias" {
+    const t = std.testing;
+
+    var conf = try LndConf.init(t.allocator);
+    defer conf.deinit();
+    try t.expectEqualStrings("", conf.alias());
+
+    try conf.setAlias("testalias1");
+    try t.expectEqualStrings("testalias1", conf.alias());
+    var buf = std.ArrayList(u8).init(t.allocator);
+    defer buf.deinit();
+    try conf.dumpWriter(buf.writer());
+    const want_alias1 =
+        \\[application options]
+        \\alias=testalias1
+        \\
+    ;
+    try t.expectEqualStrings(want_alias1, buf.items);
+
+    try conf.setAlias("testalias2");
+    try t.expectEqualStrings("testalias2", conf.alias());
+    buf.clearAndFree();
+    try conf.dumpWriter(buf.writer());
+    const want_alias2 =
+        \\[application options]
+        \\alias=testalias2
+        \\
+    ;
+    try t.expectEqualStrings(want_alias2, buf.items);
 }

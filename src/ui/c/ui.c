@@ -31,6 +31,11 @@ int nm_create_bitcoin_panel(lv_obj_t *parent);
 int nm_create_lightning_panel(lv_obj_t *parent);
 
 /**
+ * creates nodename card of the settings panel.
+ */
+lv_obj_t *nm_create_settings_nodename(lv_obj_t *parent);
+
+/**
  * creates the sysupdates section of the settings panel.
  */
 lv_obj_t *nm_create_settings_sysupdates(lv_obj_t *parent);
@@ -248,6 +253,7 @@ static int create_settings_panel(lv_obj_t *parent)
      * sysupdates panel
      ********************/
     // ported to zig;
+    lv_obj_t *nodename_panel = nm_create_settings_nodename(parent);
     lv_obj_t *sysupdates_panel = nm_create_settings_sysupdates(parent);
 
     /********************
@@ -256,13 +262,15 @@ static int create_settings_panel(lv_obj_t *parent)
     static lv_coord_t parent_grid_cols[] = {LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
     static lv_coord_t parent_grid_rows[] = {/**/
         LV_GRID_CONTENT,                    /* wifi panel */
+        LV_GRID_CONTENT,                    /* nodename panel */
         LV_GRID_CONTENT,                    /* power panel */
         LV_GRID_CONTENT,                    /* sysupdates panel */
         LV_GRID_TEMPLATE_LAST};
     lv_obj_set_grid_dsc_array(parent, parent_grid_cols, parent_grid_rows);
     lv_obj_set_grid_cell(wifi_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 0, 1);
-    lv_obj_set_grid_cell(power_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 1, 1);
-    lv_obj_set_grid_cell(sysupdates_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 2, 1);
+    lv_obj_set_grid_cell(nodename_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 1, 1);
+    lv_obj_set_grid_cell(power_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 2, 1);
+    lv_obj_set_grid_cell(sysupdates_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 3, 1);
 
     static lv_coord_t wifi_grid_cols[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
     static lv_coord_t wifi_grid_rows[] = {/**/

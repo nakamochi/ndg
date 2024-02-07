@@ -3,6 +3,7 @@ const time = std.time;
 const os = std.os;
 
 const comm = @import("comm");
+const types = @import("../types.zig");
 
 const logger = std.log.scoped(.play);
 const stderr = std.io.getStdErr().writer();
@@ -72,6 +73,11 @@ fn parseArgs(gpa: std.mem.Allocator) !Flags {
     return flags;
 }
 
+/// global vars for comm read/write threads
+var mu: std.Thread.Mutex = .{};
+var nodename: types.BufTrimString(std.os.HOST_NAME_MAX) = .{};
+var settings_sent = false;
+
 fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
     comm.write(gpa, w, .ping) catch |err| logger.err("comm.write ping: {any}", .{err});
 
@@ -137,6 +143,12 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
                 };
                 comm.write(gpa, w, .{ .lightning_ctrlconn = conn }) catch |err| logger.err("{!}", .{err});
             },
+            .set_nodename => |s| {
+                mu.lock();
+                defer mu.unlock();
+                nodename.set(s);
+                settings_sent = false;
+            },
             else => {},
         }
     }
@@ -148,8 +160,6 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
 fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
     var sectimer = try time.Timer.start();
     var block_count: u32 = 801365;
-    var settings_sent = false;
-
     var lnd_uninited_sent = false;
 
     while (true) {
@@ -159,9 +169,13 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
         }
         sectimer.reset();
 
+        mu.lock();
+        defer mu.unlock();
+
         if (!settings_sent) {
             settings_sent = true;
             const sett: comm.Message.Settings = .{
+                .hostname = nodename.val(),
                 .sysupdates = .{ .channel = .edge },
             };
             comm.write(gpa, w, .{ .settings = sett }) catch |err| {
@@ -291,6 +305,8 @@ pub fn main() !void {
     const gpa = gpa_state.allocator();
     const flags = try parseArgs(gpa);
     defer flags.deinit(gpa);
+
+    nodename.set("guiplayhost");
 
     ngui_proc = std.ChildProcess.init(&.{flags.ngui_path.?}, gpa);
     ngui_proc.stdin_behavior = .Pipe;

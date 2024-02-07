@@ -112,6 +112,7 @@ pub fn build(b: *std.Build) void {
     nd.strip = strip;
     nd.addOptions("build_options", buildopts);
     nd.addModule("nif", libnif_dep.module("nif"));
+    nd.addModule("ini", libini);
     nd.linkLibrary(libnif);
 
     const nd_build_step = b.step("nd", "build nd (nakamochi daemon)");

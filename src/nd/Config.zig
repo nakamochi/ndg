@@ -4,6 +4,7 @@
 const std = @import("std");
 const lightning = @import("../lightning.zig");
 const types = @import("../types.zig");
+const sys = @import("../sys.zig");
 
 const logger = std.log.scoped(.config);
 
@@ -31,7 +32,9 @@ pub const TOR_DATA_DIR = "/ssd/tor";
 arena: *std.heap.ArenaAllocator, // data is allocated here
 confpath: []const u8, // fs path to where data is persisted
 
+/// any heap-alloc'ed field values are in `arena.allocator()`.
 static: StaticData,
+/// guards `data` as well as `static.hostname` when the latter changed using `setHostname`.
 mu: std.Thread.RwLock = .{},
 data: Data,
 
@@ -43,8 +46,10 @@ pub const Data = struct {
     sysrunscript: []const u8,
 };
 
-/// static data is always interred at init and never changes.
+/// static data is interred at init and never changes except for hostname - see `setHostname`.
 pub const StaticData = struct {
+    hostname: []const u8, // guarded by self.mu
+    lnd_user: ?std.process.UserInfo,
     lnd_tor_hostname: ?[]const u8,
     bitcoind_rpc_pass: ?[]const u8,
 };
@@ -69,7 +74,7 @@ pub fn init(allocator: std.mem.Allocator, confpath: []const u8) !Config {
         .arena = arena,
         .confpath = confpath,
         .data = try initData(arena.allocator(), confpath),
-        .static = inferStaticData(arena.allocator()),
+        .static = try inferStaticData(arena.allocator()),
     };
 }
 
@@ -117,8 +122,17 @@ fn inferSysupdatesChannel(cron_script_path: []const u8) SysupdatesChannel {
     return .master;
 }
 
-fn inferStaticData(allocator: std.mem.Allocator) StaticData {
+fn inferStaticData(allocator: std.mem.Allocator) !StaticData {
+    const hostname = try sys.hostname(allocator);
+    const lnduser: ?std.process.UserInfo = blk: {
+        const uid = std.os.linux.getuid();
+        const uinfo = types.getUserInfo(LND_OS_USER) catch break :blk null;
+        // assume there's no lnd user if uid is root or same as current process.
+        break :blk if (uinfo.uid == 0 or uinfo.uid == uid) null else uinfo;
+    };
     return .{
+        .hostname = hostname,
+        .lnd_user = lnduser,
         .lnd_tor_hostname = inferLndTorHostname(allocator) catch null,
         .bitcoind_rpc_pass = inferBitcoindRpcPass(allocator) catch null,
     };
@@ -154,16 +168,65 @@ fn inferBitcoindRpcPass(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 /// calls F while holding a readonly lock and passes on F's result as is.
+/// F is expected to take `Data` and `StaticData` args.
 pub fn safeReadOnly(self: *Config, comptime F: anytype) @typeInfo(@TypeOf(F)).Fn.return_type.? {
     self.mu.lockShared();
     defer self.mu.unlockShared();
-    return F(self.data);
+    return F(self.data, self.static);
 }
+
+/// used by mutateLndConf to guard concurrent access.
+var lndconf_mu: std.Thread.Mutex = .{};
+
+pub const MutateLndConfOpt = struct {
+    filepath: ?[]const u8 = null, // lnd conf file name; defaults to LND_CONF_PATH
+};
+
+/// allows callers to serialize access to an lnd config file.
+pub fn beginMutateLndConf(self: *Config, opt: MutateLndConfOpt) !LndConfMut {
+    lndconf_mu.lock();
+    errdefer lndconf_mu.unlock();
+    const allocator = self.arena.child_allocator;
+    const filepath = opt.filepath orelse LND_CONF_PATH;
+    return .{
+        .lndconf = try lightning.LndConf.load(allocator, filepath),
+        .allocator = allocator,
+        .filepath = filepath,
+        .lnduser = self.static.lnd_user,
+        .mu = &lndconf_mu,
+    };
+}
+
+pub const LndConfMut = struct {
+    lndconf: lightning.LndConf,
+
+    allocator: std.mem.Allocator,
+    filepath: []const u8,
+    lnduser: ?std.process.UserInfo = null,
+    mu: *std.Thread.Mutex,
+
+    pub fn persist(self: @This()) !void {
+        const file = try std.io.BufferedAtomicFile.create(self.allocator, std.fs.cwd(), self.filepath, .{ .mode = 0o400 });
+        defer file.destroy(); // frees resources; does NOT delete the file
+        try self.lndconf.dumpWriter(file.writer());
+        try file.finish(); // persist the file in the correct location
+        // change ownership to that of the lnd sys user
+        if (self.lnduser) |user| {
+            try chown(self.filepath, user);
+        }
+    }
+
+    /// relinquish concurrent access guard and resources.
+    pub fn finish(self: @This()) void {
+        defer self.mu.unlock();
+        self.lndconf.deinit();
+    }
+};
 
 /// stores current `Config.data` to disk, into `Config.confpath`.
 pub fn dump(self: *Config) !void {
-    self.mu.lock();
-    defer self.mu.unlock();
+    self.mu.lockShared();
+    defer self.mu.unlockShared();
     return self.dumpUnguarded();
 }
 
@@ -174,6 +237,22 @@ fn dumpUnguarded(self: Config) !void {
     defer file.destroy();
     try std.json.stringify(self.data, .{ .whitespace = .indent_2 }, file.writer());
     try file.finish();
+}
+
+/// sets hostname to a new name at runtime in both the OS and `Config.static.hostname`.
+/// see `sys.setHostname` for `newname` sanitization rules.
+/// the name arg must outlive this function call.
+/// safe for concurrent use.
+pub fn setHostname(self: *Config, newname: []const u8) !void {
+    self.mu.lock(); // for self.static.hostname
+    defer self.mu.unlock();
+    const allocator = self.arena.allocator();
+
+    const dupname = try allocator.dupe(u8, newname);
+    errdefer allocator.free(dupname);
+    try sys.setHostname(allocator, newname);
+    allocator.free(self.static.hostname);
+    self.static.hostname = dupname;
 }
 
 /// when run is set, executes the update after changing the channel.
@@ -214,6 +293,8 @@ fn genSysupdatesCronScript(self: Config) !void {
 
 /// the scriptpath is typically the cronjob script, not a SYSUPDATES_RUN_SCRIPT
 /// because the latter requires command args which is what cron script does.
+///
+/// the caller must serialize this function calls.
 fn runSysupdates(allocator: std.mem.Allocator, scriptpath: []const u8) !void {
     const res = try std.ChildProcess.exec(.{ .allocator = allocator, .argv = &.{scriptpath} });
     defer {
@@ -260,6 +341,7 @@ pub fn lndConnectWaitMacaroonFile(self: Config, allocator: std.mem.Allocator, ty
         .tor_http => 10010,
     };
     return std.fmt.allocPrint(allocator, "lndconnect://{[host]s}:{[port]d}?macaroon={[macaroon]s}", .{
+        // TODO: return an error instead and propagate to the UI
         .host = self.static.lnd_tor_hostname orelse "<no-tor-hostname>.onion",
         .port = port,
         .macaroon = macaroon_b64,
@@ -272,7 +354,6 @@ pub fn lndConnectWaitMacaroonFile(self: Config, allocator: std.mem.Allocator, ty
 /// returns the bytes printed to outbuf.
 pub fn makeWalletUnlockFile(self: Config, outbuf: []u8, comptime raw_size: usize) ![]const u8 {
     const filepath = LND_WALLETUNLOCK_PATH;
-    const lnduser = try types.getUserInfo(LND_OS_USER);
 
     const allocator = self.arena.child_allocator;
     const opt = .{ .mode = 0o400 };
@@ -284,24 +365,20 @@ pub fn makeWalletUnlockFile(self: Config, outbuf: []u8, comptime raw_size: usize
     const hex = try std.fmt.bufPrint(outbuf, "{}", .{std.fmt.fmtSliceHexLower(&raw_unlock_pwd)});
     try file.writer().writeAll(hex);
     try file.finish();
-
-    const f = try std.fs.cwd().openFile(filepath, .{});
-    defer f.close();
-    try f.chown(lnduser.uid, lnduser.gid);
+    try self.chownLndUser(filepath);
 
     return hex;
 }
 
 /// options for genLndConfig.
-pub const LndConfOpt = struct {
+pub const GenLndConfOpt = struct {
     autounlock: bool,
     path: ?[]const u8 = null, // defaults to LND_CONF_PATH
 };
 
 /// creates or overwrites existing lnd config file on disk.
-pub fn genLndConfig(self: Config, opt: LndConfOpt) !void {
+pub fn genLndConfig(self: Config, opt: GenLndConfOpt) !void {
     const confpath = opt.path orelse LND_CONF_PATH;
-    const lnduser = try types.getUserInfo(LND_OS_USER);
 
     const allocator = self.arena.child_allocator;
     var conf = try lightning.LndConf.init(allocator);
@@ -358,9 +435,20 @@ pub fn genLndConfig(self: Config, opt: LndConfOpt) !void {
     try file.finish(); // persist the file in the correct location
 
     // change file ownership to that of the lnd system user.
-    const f = try std.fs.cwd().openFile(confpath, .{});
+    try self.chownLndUser(confpath);
+}
+
+/// changes a file ownership to that of `LND_OS_USER`, if the user exists.
+fn chownLndUser(self: Config, filepath: []const u8) !void {
+    if (self.static.lnd_user) |user| {
+        try chown(filepath, user);
+    }
+}
+
+fn chown(filepath: []const u8, user: std.process.UserInfo) !void {
+    const f = try std.fs.cwd().openFile(filepath, .{});
     defer f.close();
-    try f.chown(lnduser.uid, lnduser.gid);
+    try f.chown(user.uid, user.gid);
 }
 
 test "ndconfig: init existing" {
@@ -520,6 +608,8 @@ test "ndconfig: genLndConfig" {
             .sysrunscript = undefined, // unused
         },
         .static = .{
+            .hostname = "testhost",
+            .lnd_user = null,
             .lnd_tor_hostname = "test.onion",
             .bitcoind_rpc_pass = "test secret",
         },
@@ -548,4 +638,46 @@ test "ndconfig: genLndConfig" {
     try t.expect(lndconf.findSection("bitcoind") != null);
     try t.expect(lndconf.findSection("autopilot") != null);
     try t.expect(lndconf.findSection("tor") != null);
+}
+
+test "ndconfig: mutate LndConf" {
+    const t = std.testing;
+    const tt = @import("../test.zig");
+
+    // Config auto-deinits the arena.
+    var conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+    conf_arena.* = std.heap.ArenaAllocator.init(t.allocator);
+    var tmp = try tt.TempDir.create();
+    defer tmp.cleanup();
+
+    var conf = Config{
+        .arena = conf_arena,
+        .confpath = undefined, // unused
+        .data = undefined, // unused
+        .static = .{
+            .lnd_user = try types.getUserInfo("ignored"),
+            .hostname = undefined,
+            .lnd_tor_hostname = null,
+            .bitcoind_rpc_pass = null,
+        },
+    };
+    defer conf.deinit();
+    const lndconf_path = try tmp.join(&.{"lndconf.ini"});
+    try tmp.dir.writeFile(lndconf_path,
+        \\[application options]
+        \\alias=noname
+        \\
+    );
+    var mut = try conf.beginMutateLndConf(.{ .filepath = lndconf_path });
+    try mut.lndconf.setAlias("newalias");
+    try mut.persist();
+    mut.finish();
+
+    const cont = try tmp.dir.readFileAlloc(t.allocator, lndconf_path, 1 << 10);
+    defer t.allocator.free(cont);
+    try t.expectEqualStrings(
+        \\[application options]
+        \\alias=newalias
+        \\
+    , cont);
 }

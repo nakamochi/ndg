@@ -774,6 +774,48 @@ pub const TextButton = struct {
     }
 };
 
+pub const TextArea = struct {
+    lvobj: *LvObj,
+
+    pub usingnamespace BaseObjMethods;
+    pub usingnamespace WidgetMethods;
+    pub usingnamespace InteractiveMethods;
+
+    pub const Opt = struct {
+        oneline: bool = true,
+        password_mode: bool = false,
+        maxlen: ?u32 = null,
+    };
+
+    pub fn new(parent: anytype, opt: Opt) !TextArea {
+        const obj = lv_textarea_create(parent.lvobj) orelse return error.OutOfMemory;
+        const ta: TextArea = .{ .lvobj = obj };
+        ta.setOpt(opt);
+        return ta;
+    }
+
+    pub fn setOpt(self: TextArea, opt: Opt) void {
+        lv_textarea_set_one_line(self.lvobj, opt.oneline);
+        lv_textarea_set_password_mode(self.lvobj, opt.password_mode);
+        if (opt.maxlen) |n| {
+            lv_textarea_set_max_length(self.lvobj, n);
+        }
+    }
+
+    /// `text` arg is heap-duplicated by LVGL's alloc and owned by this text area object.
+    pub fn setText(self: TextArea, txt: [:0]const u8) void {
+        lv_textarea_set_text(self.lvobj, txt.ptr);
+    }
+
+    /// returned value is still owned by `TextArea`.
+    pub fn text(self: TextArea) []const u8 {
+        const buf = lv_textarea_get_text(self.lvobj) orelse return "";
+        //const slice: [:0]const u8 = std.mem.span(buf);
+        //return slice;
+        return std.mem.span(buf);
+    }
+};
+
 pub const Spinner = struct {
     lvobj: *LvObj,
 
@@ -1171,6 +1213,13 @@ extern fn lv_label_set_text(label: *LvObj, text: [*:0]const u8) void;
 extern fn lv_label_set_text_static(label: *LvObj, text: [*:0]const u8) void;
 extern fn lv_label_set_long_mode(label: *LvObj, mode: c.lv_label_long_mode_t) void;
 extern fn lv_label_set_recolor(label: *LvObj, enable: bool) void;
+
+extern fn lv_textarea_create(parent: *LvObj) ?*LvObj;
+extern fn lv_textarea_get_text(obj: *LvObj) ?[*:0]const u8;
+extern fn lv_textarea_set_max_length(obj: *LvObj, n: u32) void;
+extern fn lv_textarea_set_one_line(obj: *LvObj, enable: bool) void;
+extern fn lv_textarea_set_password_mode(obj: *LvObj, enable: bool) void;
+extern fn lv_textarea_set_text(obj: *LvObj, text: [*:0]const u8) void;
 
 extern fn lv_dropdown_create(parent: *LvObj) ?*LvObj;
 extern fn lv_dropdown_set_text(obj: *LvObj, text: ?[*:0]const u8) void;

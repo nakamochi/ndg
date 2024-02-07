@@ -6,19 +6,32 @@
 const std = @import("std");
 
 const comm = @import("../comm.zig");
+const types = @import("../types.zig");
 const lvgl = @import("lvgl.zig");
 const symbol = @import("symbol.zig");
+const widget = @import("widget.zig");
 
 const logger = std.log.scoped(.ui);
 
 /// label color mark start to make "label:" part of a "label: value"
 /// in a different color.
 const cmark = "#bbbbbb ";
-/// button text
+/// buttons text
 const textSwitch = "SWITCH";
+const textChange = "CHANGE";
+
+// global allocator set in init.
+// must be set before any call into pub funcs in this module.
+pub var allocator: std.mem.Allocator = undefined;
 
 /// the settings tab alive for the whole duration of the process.
 var tab: struct {
+    nodename: struct {
+        card: lvgl.Card,
+        currname: lvgl.Label,
+        textarea: lvgl.TextArea,
+        changebtn: lvgl.TextButton,
+    },
     sysupdates: struct {
         card: lvgl.Card,
         chansel: lvgl.Dropdown,
@@ -29,8 +42,57 @@ var tab: struct {
 
 /// holds last values received from the daemon.
 var state: struct {
+    nodename_change_inprogress: bool = false,
+    curr_nodename: types.BufTrimString(std.os.HOST_NAME_MAX) = .{},
     curr_sysupdates_chan: ?comm.Message.SysupdatesChan = null,
 } = .{};
+
+/// creates a settings panel allowing to change hostname and lnd alias,
+/// aka nodename.
+pub fn initNodenamePanel(cont: lvgl.Container) !lvgl.Card {
+    tab.nodename.card = try lvgl.Card.new(cont, symbol.Edit ++ " NODE NAME", .{ .spinner = true });
+
+    const row = try lvgl.FlexLayout.new(tab.nodename.card, .row, .{});
+    row.setWidth(lvgl.sizePercent(100));
+    row.setHeightToContent();
+
+    // left column
+    const left = try lvgl.FlexLayout.new(row, .column, .{ .height = .content });
+    left.flexGrow(1);
+    left.setPad(10, .row, .{});
+
+    tab.nodename.currname = try lvgl.Label.new(left, cmark ++ "CURRENT NAME:# unknown", .{ .recolor = true });
+    tab.nodename.currname.setHeightToContent();
+
+    const lab = try lvgl.Label.new(left, "the name is visible on a local network as well as lightning.", .{});
+    lab.setWidth(lvgl.sizePercent(100));
+    lab.setHeightToContent();
+    lab.setPad(0, .right, .{});
+
+    // right column
+    const right = try lvgl.FlexLayout.new(row, .column, .{ .height = .content });
+    right.flexGrow(1);
+    right.setPad(10, .row, .{});
+    right.setPad(0, .column, .{});
+
+    tab.nodename.textarea = try lvgl.TextArea.new(right, .{
+        .maxlen = std.os.HOST_NAME_MAX,
+        .oneline = true,
+    });
+    tab.nodename.textarea.setWidth(lvgl.sizePercent(100));
+    _ = tab.nodename.textarea.on(.all, nm_nodename_textarea_input, null);
+
+    tab.nodename.changebtn = try lvgl.TextButton.new(right, textChange);
+    tab.nodename.changebtn.setWidth(lvgl.sizePercent(100));
+    tab.nodename.changebtn.setPad(0, .left, .{});
+
+    // disable name change 'till data received from the daemon.
+    tab.nodename.textarea.disable();
+    tab.nodename.changebtn.disable();
+    _ = tab.nodename.changebtn.on(.click, nm_nodename_change_btn_click, null);
+
+    return tab.nodename.card;
+}
 
 /// creates a settings panel UI to control system updates channel.
 /// must be called only once at program startup.
@@ -83,9 +145,61 @@ pub fn initSysupdatesPanel(cont: lvgl.Container) !lvgl.Card {
 
 /// updates the UI with the data from the provided settings arg.
 pub fn update(sett: comm.Message.Settings) !void {
+    // sysupdates channel
     var buf: [512]u8 = undefined;
     try tab.sysupdates.currchan.setTextFmt(&buf, cmark ++ "CURRENT CHANNEL:# {s}", .{@tagName(sett.sysupdates.channel)});
     state.curr_sysupdates_chan = sett.sysupdates.channel;
+
+    // nodename
+    state.curr_nodename.set(sett.hostname);
+    try tab.nodename.currname.setTextFmt(&buf, cmark ++ "CURRENT NAME:# {s}", .{state.curr_nodename.val()});
+    if (state.nodename_change_inprogress) {
+        const currname = tab.nodename.textarea.text();
+        if (std.mem.eql(u8, sett.hostname, currname)) {
+            state.nodename_change_inprogress = false;
+            tab.nodename.textarea.setText("");
+            tab.nodename.textarea.enable();
+            tab.nodename.card.spin(.off);
+        }
+    } else {
+        tab.nodename.textarea.enable();
+        const currname = state.curr_nodename.val();
+        const newname = tab.nodename.textarea.text();
+        if (newname.len > 0 and !std.mem.eql(u8, newname, currname)) {
+            tab.nodename.changebtn.enable();
+        } else {
+            tab.nodename.changebtn.disable();
+        }
+    }
+}
+
+export fn nm_nodename_textarea_input(e: *lvgl.LvEvent) void {
+    switch (e.code()) {
+        .focus => widget.keyboardOn(tab.nodename.textarea),
+        .defocus, .ready, .cancel => widget.keyboardOff(),
+        .value_changed => {
+            const currname = state.curr_nodename.val();
+            const newname = tab.nodename.textarea.text();
+            if (currname.len > 0 and newname.len > 0 and !std.mem.eql(u8, newname, currname)) {
+                tab.nodename.changebtn.enable();
+            } else {
+                tab.nodename.changebtn.disable();
+            }
+        },
+        else => {},
+    }
+}
+
+export fn nm_nodename_change_btn_click(_: *lvgl.LvEvent) void {
+    const newname = tab.nodename.textarea.text();
+    comm.pipeWrite(.{ .set_nodename = newname }) catch |err| {
+        logger.err("nodename change pipe write: {!}", .{err});
+        return;
+    };
+    state.nodename_change_inprogress = true;
+    tab.nodename.changebtn.disable();
+    tab.nodename.textarea.disable();
+    tab.nodename.card.spin(.on);
 }
 
 export fn nm_sysupdates_chansel_changed(_: *lvgl.LvEvent) void {

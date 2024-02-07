@@ -62,6 +62,33 @@ pub const IoPipe = struct {
     }
 };
 
+pub fn BufTrimString(comptime maxlength: usize) type {
+    return struct {
+        buf: [maxlength]u8 = undefined,
+        len: usize = 0,
+
+        pub fn set(self: *@This(), s: []const u8) void {
+            const newlen = @min(maxlength, s.len);
+            @memcpy(@as([*]u8, &self.buf), s[0..newlen]);
+            self.len = newlen;
+        }
+
+        pub fn val(self: *const @This()) []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+}
+
+test "BufTrimString" {
+    const t = std.testing;
+    var bs = BufTrimString(5){};
+    try t.expectEqualStrings("", bs.val());
+    bs.set("hello");
+    try t.expectEqualStrings("hello", bs.val());
+    bs.set("hellahello");
+    try t.expectEqualStrings("hella", bs.val());
+}
+
 pub const StringList = struct {
     l: std.ArrayList([]const u8),
     allocator: std.mem.Allocator,
