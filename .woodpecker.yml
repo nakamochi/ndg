@@ -32,4 +32,4 @@ pipeline:
   playground:
     image: git.qcode.ch/nakamochi/ci-zig0.11.0:v2
     commands:
-      - zig build guiplay btcrpc
+      - zig build guiplay btcrpc lndhc

@@ -1,5 +1,5 @@
 const std = @import("std");
-const lndhttp = @import("lndhttp");
+const lndhttp = @import("lightning").lndhttp;
 
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};

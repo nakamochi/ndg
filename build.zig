@@ -175,7 +175,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         lndhc.strip = strip;
-        lndhc.addModule("lndhttp", b.createModule(.{ .source_file = .{ .path = "src/lndhttp.zig" } }));
+        lndhc.addModule("lightning", b.createModule(.{ .source_file = .{ .path = "src/lightning.zig" } }));
 
         const lndhc_build_step = b.step("lndhc", "lnd HTTP API client playground");
         lndhc_build_step.dependOn(&b.addInstallArtifact(lndhc, .{}).step);
