@@ -70,7 +70,13 @@ typedef struct {
  **********************/
 
 /**
- * find connected input device with specific capabilities
+ * Determine the capabilities of a specific libinput device.
+ * @param device the libinput device to query
+ * @return the supported input capabilities
+ */
+libinput_capability libinput_query_capability(struct libinput_device *device);
+/**
+ * Find connected input device with specific capabilities
  * @param capabilities required device capabilities
  * @param force_rescan erase the device cache (if any) and rescan the file system for available devices
  * @return device node path (e.g. /dev/input/event0) for the first matching device or NULL if no device was found.
@@ -78,7 +84,7 @@ typedef struct {
  */
 char *libinput_find_dev(libinput_capability capabilities, bool force_rescan);
 /**
- * find connected input devices with specific capabilities
+ * Find connected input devices with specific capabilities
  * @param capabilities required device capabilities
  * @param devices pre-allocated array to store the found device node paths (e.g. /dev/input/event0). The pointers are
  *                safe to use until the next forceful device search.
@@ -99,6 +105,12 @@ void libinput_init(void);
  * @param path input device node path (e.g. /dev/input/event0)
  */
 void libinput_init_state(libinput_drv_state_t *state, char* path);
+/**
+ * De-initialise a previously initialised driver state and free any dynamically allocated memory. Use this function if you want to
+ * reuse an existing driver state.
+ * @param state driver state to de-initialize
+ */
+void libinput_deinit_state(libinput_drv_state_t *state);
 /**
  * Reconfigure the device file for libinput using the default driver state. Use this function if you only want
  * to connect a single device.

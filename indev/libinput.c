@@ -74,7 +74,28 @@ static const struct libinput_interface interface = {
  **********************/
 
 /**
- * find connected input device with specific capabilities
+ * Determine the capabilities of a specific libinput device.
+ * @param device the libinput device to query
+ * @return the supported input capabilities
+ */
+libinput_capability libinput_query_capability(struct libinput_device *device) {
+  libinput_capability capability = LIBINPUT_CAPABILITY_NONE;
+  if (libinput_device_has_capability(device, LIBINPUT_DEVICE_CAP_KEYBOARD)
+      && (libinput_device_keyboard_has_key(device, KEY_ENTER) || libinput_device_keyboard_has_key(device, KEY_KPENTER)))
+  {
+    capability |= LIBINPUT_CAPABILITY_KEYBOARD;
+  }
+  if (libinput_device_has_capability(device, LIBINPUT_DEVICE_CAP_POINTER)) {
+    capability |= LIBINPUT_CAPABILITY_POINTER;
+  }
+  if (libinput_device_has_capability(device, LIBINPUT_DEVICE_CAP_TOUCH)) {
+    capability |= LIBINPUT_CAPABILITY_TOUCH;
+  }
+  return capability;
+}
+
+/**
+ * Find connected input device with specific capabilities
  * @param capabilities required device capabilities
  * @param force_rescan erase the device cache (if any) and rescan the file system for available devices
  * @return device node path (e.g. /dev/input/event0) for the first matching device or NULL if no device was found.
@@ -87,7 +108,7 @@ char *libinput_find_dev(libinput_capability capabilities, bool force_rescan) {
 }
 
 /**
- * find connected input devices with specific capabilities
+ * Find connected input devices with specific capabilities
  * @param capabilities required device capabilities
  * @param devices pre-allocated array to store the found device node paths (e.g. /dev/input/event0). The pointers are
  *                safe to use until the next forceful device search.
@@ -138,8 +159,8 @@ bool libinput_set_file_state(libinput_drv_state_t *state, char* dev_name)
   // citing libinput.h:libinput_path_remove_device:
   // > If no matching device exists, this function does nothing.
   if (state->libinput_device) {
-    state->libinput_device = libinput_device_unref(state->libinput_device);
     libinput_path_remove_device(state->libinput_device);
+    state->libinput_device = libinput_device_unref(state->libinput_device);
   }
 
   state->libinput_device = libinput_path_add_device(state->libinput_context, dev_name);
@@ -193,6 +214,29 @@ void libinput_init_state(libinput_drv_state_t *state, char* path)
 #if USE_XKB
   xkb_init_state(&(state->xkb_state));
 #endif
+}
+
+/**
+ * De-initialise a previously initialised driver state and free any dynamically allocated memory. Use this function if you want to
+ * reuse an existing driver state.
+ * @param state driver state to de-initialize
+ */
+void libinput_deinit_state(libinput_drv_state_t *state)
+{
+  if (state->libinput_device) {
+    libinput_path_remove_device(state->libinput_device);
+    libinput_device_unref(state->libinput_device);
+  }
+
+  if (state->libinput_context) {
+    libinput_unref(state->libinput_context);
+  }
+
+#if USE_XKB
+  xkb_deinit_state(&(state->xkb_state));
+#endif
+
+  lv_memzero(state, sizeof(libinput_drv_state_t));
 }
 
 /**
@@ -296,18 +340,7 @@ static bool rescan_devices(void) {
      * as part of this function, we don't have to increase its reference count to keep it alive.
      * https://wayland.freedesktop.org/libinput/doc/latest/api/group__base.html#gaa797496f0150b482a4e01376bd33a47b */
 
-    libinput_capability capabilities = LIBINPUT_CAPABILITY_NONE;
-    if (libinput_device_has_capability(device, LIBINPUT_DEVICE_CAP_KEYBOARD)
-        && (libinput_device_keyboard_has_key(device, KEY_ENTER) || libinput_device_keyboard_has_key(device, KEY_KPENTER)))
-    {
-      capabilities |= LIBINPUT_CAPABILITY_KEYBOARD;
-    }
-    if (libinput_device_has_capability(device, LIBINPUT_DEVICE_CAP_POINTER)) {
-      capabilities |= LIBINPUT_CAPABILITY_POINTER;
-    }
-    if (libinput_device_has_capability(device, LIBINPUT_DEVICE_CAP_TOUCH)) {
-      capabilities |= LIBINPUT_CAPABILITY_TOUCH;
-    }
+    libinput_capability capabilities = libinput_query_capability(device);
 
     libinput_path_remove_device(device);
 
@@ -387,13 +420,13 @@ static void read_pointer(libinput_drv_state_t *state, struct libinput_event *eve
     case LIBINPUT_EVENT_TOUCH_MOTION:
     case LIBINPUT_EVENT_TOUCH_DOWN:
       touch_event = libinput_event_get_touch_event(event);
-      lv_coord_t x = libinput_event_touch_get_x_transformed(touch_event, drv->physical_hor_res > 0 ? drv->physical_hor_res : drv->hor_res) - drv->offset_x;
-      lv_coord_t y = libinput_event_touch_get_y_transformed(touch_event, drv->physical_ver_res > 0 ? drv->physical_ver_res : drv->ver_res) - drv->offset_y;
-      if (x < 0 || x > drv->hor_res || y < 0 || y > drv->ver_res) {
+      lv_coord_t x_touch = libinput_event_touch_get_x_transformed(touch_event, drv->physical_hor_res > 0 ? drv->physical_hor_res : drv->hor_res) - drv->offset_x;
+      lv_coord_t y_touch = libinput_event_touch_get_y_transformed(touch_event, drv->physical_ver_res > 0 ? drv->physical_ver_res : drv->ver_res) - drv->offset_y;
+      if (x_touch < 0 || x_touch > drv->hor_res || y_touch < 0 || y_touch > drv->ver_res) {
         break; /* ignore touches that are out of bounds */
       }
-      state->most_recent_touch_point.x = x;
-      state->most_recent_touch_point.y = y;
+      state->most_recent_touch_point.x = x_touch;
+      state->most_recent_touch_point.y = y_touch;
       state->button = LV_INDEV_STATE_PR;
       break;
     case LIBINPUT_EVENT_TOUCH_UP:
@@ -405,6 +438,16 @@ static void read_pointer(libinput_drv_state_t *state, struct libinput_event *eve
       state->most_recent_touch_point.y += libinput_event_pointer_get_dy(pointer_event);
       state->most_recent_touch_point.x = LV_CLAMP(0, state->most_recent_touch_point.x, drv->hor_res - 1);
       state->most_recent_touch_point.y = LV_CLAMP(0, state->most_recent_touch_point.y, drv->ver_res - 1);
+      break;
+    case LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE:
+      pointer_event = libinput_event_get_pointer_event(event);
+      lv_coord_t x_pointer = libinput_event_pointer_get_absolute_x_transformed(pointer_event, drv->physical_hor_res > 0 ? drv->physical_hor_res : drv->hor_res) - drv->offset_x;
+      lv_coord_t y_pointer = libinput_event_pointer_get_absolute_y_transformed(pointer_event, drv->physical_ver_res > 0 ? drv->physical_ver_res : drv->ver_res) - drv->offset_y;
+      if (x_pointer < 0 || x_pointer > drv->hor_res || y_pointer < 0 || y_pointer > drv->ver_res) {
+        break; /* ignore pointer events that are out of bounds */
+      }
+      state->most_recent_touch_point.x = x_pointer;
+      state->most_recent_touch_point.y = y_pointer;
       break;
     case LIBINPUT_EVENT_POINTER_BUTTON:
       pointer_event = libinput_event_get_pointer_event(event);

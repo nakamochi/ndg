@@ -74,6 +74,23 @@ bool xkb_init_state(xkb_drv_state_t *state) {
 }
 
 /**
+ * De-initialise a previously initialised driver state and free any dynamically allocated memory. Use this function if you want to
+ * reuse an existing driver state.
+ * @param state XKB driver state to use
+ */
+void xkb_deinit_state(xkb_drv_state_t *state) {
+  if (state->state) {
+    xkb_state_unref(state->state);
+    state->state = NULL;
+  }
+
+  if (state->keymap) {
+    xkb_keymap_unref(state->keymap);
+    state->keymap = NULL;
+  }
+}
+
+/**
  * Set a new keymap to be used for processing future key events using the default driver state. Use
  * this function if you only want to connect a single device.
  * @param names XKB rule names structure (use NULL components for default values)
@@ -95,16 +112,10 @@ bool xkb_set_keymap_state(xkb_drv_state_t *state, struct xkb_rule_names names) {
     xkb_keymap_unref(state->keymap);
     state->keymap = NULL;
   }
- 
+
   state->keymap = xkb_keymap_new_from_names(context, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
   if (!state->keymap) {
     perror("could not create XKB keymap");
-    return false;
-  }
-
-  state->keymap = xkb_keymap_ref(state->keymap);
-  if (!state->keymap) {
-    perror("could not reference XKB keymap");
     return false;
   }
 
@@ -116,12 +127,6 @@ bool xkb_set_keymap_state(xkb_drv_state_t *state, struct xkb_rule_names names) {
   state->state = xkb_state_new(state->keymap);
   if (!state->state) {
     perror("could not create XKB state");
-    return false;
-  }
-
-  state->state = xkb_state_ref(state->state);
-  if (!state->state) {
-    perror("could not reference XKB state");
     return false;
   }
 

@@ -1,6 +1,6 @@
 /**
  * @file lv_drv_conf.h
- * Configuration file for v8.3.0
+ * Configuration file for v9.0.0-dev
  */
 
 /*
@@ -110,6 +110,9 @@
 
 /*Open two windows to test multi display support*/
 #  define SDL_DUAL_DISPLAY            0
+
+/* Window Title  */
+#  define SDL_WINDOW_TITLE "TFT Simulator"
 #endif
 
 /*-------------------
@@ -190,6 +193,13 @@
 #  ifndef LV_WAYLAND_XDG_SHELL
 #    define LV_WAYLAND_XDG_SHELL 0
 #  endif
+#endif
+
+/*----------------------------------------
+ *  X11 drivers (monitor, mouse, keyboard)
+ *---------------------------------------*/
+#ifndef USE_X11
+#  define USE_X11       0
 #endif
 
 /*----------------
