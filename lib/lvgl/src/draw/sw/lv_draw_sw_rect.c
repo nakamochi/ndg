@@ -35,11 +35,11 @@ static void draw_border(lv_draw_ctx_t * draw_ctx, const lv_draw_rect_dsc_t * dsc
 static void draw_outline(lv_draw_ctx_t * draw_ctx, const lv_draw_rect_dsc_t * dsc, const lv_area_t * coords);
 
 #if LV_DRAW_COMPLEX
-LV_ATTRIBUTE_FAST_MEM static void draw_shadow(lv_draw_ctx_t * draw_ctx, const lv_draw_rect_dsc_t * dsc,
-                                              const lv_area_t * coords);
-LV_ATTRIBUTE_FAST_MEM static void shadow_draw_corner_buf(const lv_area_t * coords, uint16_t * sh_buf, lv_coord_t s,
-                                                         lv_coord_t r);
-LV_ATTRIBUTE_FAST_MEM static void shadow_blur_corner(lv_coord_t size, lv_coord_t sw, uint16_t * sh_ups_buf);
+static void /* LV_ATTRIBUTE_FAST_MEM */ draw_shadow(lv_draw_ctx_t * draw_ctx, const lv_draw_rect_dsc_t * dsc,
+                                                    const lv_area_t * coords);
+static void /* LV_ATTRIBUTE_FAST_MEM */ shadow_draw_corner_buf(const lv_area_t * coords, uint16_t * sh_buf,
+                                                               lv_coord_t s, lv_coord_t r);
+static void /* LV_ATTRIBUTE_FAST_MEM */ shadow_blur_corner(lv_coord_t size, lv_coord_t sw, uint16_t * sh_ups_buf);
 #endif
 
 void draw_border_generic(lv_draw_ctx_t * draw_ctx, const lv_area_t * outer_area, const lv_area_t * inner_area,
@@ -430,7 +430,7 @@ static void draw_border(lv_draw_ctx_t * draw_ctx, const lv_draw_rect_dsc_t * dsc
 }
 
 #if LV_DRAW_COMPLEX
-LV_ATTRIBUTE_FAST_MEM static void draw_shadow(lv_draw_ctx_t * draw_ctx, const lv_draw_rect_dsc_t * dsc,
+static void LV_ATTRIBUTE_FAST_MEM draw_shadow(lv_draw_ctx_t * draw_ctx, const lv_draw_rect_dsc_t * dsc,
                                               const lv_area_t * coords)
 {
     /*Check whether the shadow is visible*/
@@ -950,8 +950,8 @@ LV_ATTRIBUTE_FAST_MEM static void draw_shadow(lv_draw_ctx_t * draw_ctx, const lv
  * @param sw shadow width
  * @param r radius
  */
-LV_ATTRIBUTE_FAST_MEM static void shadow_draw_corner_buf(const lv_area_t * coords, uint16_t * sh_buf, lv_coord_t sw,
-                                                         lv_coord_t r)
+static void LV_ATTRIBUTE_FAST_MEM shadow_draw_corner_buf(const lv_area_t * coords, uint16_t * sh_buf,
+                                                         lv_coord_t sw, lv_coord_t r)
 {
     int32_t sw_ori = sw;
     int32_t size = sw_ori  + r;
@@ -1037,7 +1037,7 @@ LV_ATTRIBUTE_FAST_MEM static void shadow_draw_corner_buf(const lv_area_t * coord
 
 }
 
-LV_ATTRIBUTE_FAST_MEM static void shadow_blur_corner(lv_coord_t size, lv_coord_t sw, uint16_t * sh_ups_buf)
+static void LV_ATTRIBUTE_FAST_MEM shadow_blur_corner(lv_coord_t size, lv_coord_t sw, uint16_t * sh_ups_buf)
 {
     int32_t s_left = sw >> 1;
     int32_t s_right = (sw >> 1);
@@ -1159,12 +1159,13 @@ void draw_border_generic(lv_draw_ctx_t * draw_ctx, const lv_area_t * outer_area,
 
     bool mask_any = lv_draw_mask_is_any(outer_area);
 
+#if LV_DRAW_COMPLEX
+
     if(!mask_any && rout == 0 && rin == 0) {
         draw_border_simple(draw_ctx, outer_area, inner_area, color, opa);
         return;
     }
 
-#if LV_DRAW_COMPLEX
     /*Get clipped draw area which is the real draw area.
      *It is always the same or inside `coords`*/
     lv_area_t draw_area;
@@ -1281,12 +1282,12 @@ void draw_border_generic(lv_draw_ctx_t * draw_ctx, const lv_area_t * outer_area,
     /*Draw the corners*/
     lv_coord_t blend_w;
 
-    /*Left and right corner together is they close to eachother*/
+    /*Left and right corner together if they are close to each other*/
     if(!split_hor) {
         /*Calculate the top corner and mirror it to the bottom*/
         blend_area.x1 = draw_area.x1;
         blend_area.x2 = draw_area.x2;
-        lv_coord_t max_h = LV_MAX(rout, outer_area->y1 - inner_area->y1);
+        lv_coord_t max_h = LV_MAX(rout, inner_area->y1 - outer_area->y1);
         for(h = 0; h < max_h; h++) {
             lv_coord_t top_y = outer_area->y1 + h;
             lv_coord_t bottom_y = outer_area->y2 - h;
@@ -1375,6 +1376,13 @@ void draw_border_generic(lv_draw_ctx_t * draw_ctx, const lv_area_t * outer_area,
 
 #else /*LV_DRAW_COMPLEX*/
     LV_UNUSED(blend_mode);
+    LV_UNUSED(rout);
+    LV_UNUSED(rin);
+    if(!mask_any) {
+        draw_border_simple(draw_ctx, outer_area, inner_area, color, opa);
+        return;
+    }
+
 #endif /*LV_DRAW_COMPLEX*/
 }
 static void draw_border_simple(lv_draw_ctx_t * draw_ctx, const lv_area_t * outer_area, const lv_area_t * inner_area,

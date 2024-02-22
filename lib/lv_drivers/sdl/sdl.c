@@ -9,8 +9,8 @@
 #include "sdl.h"
 #if USE_MONITOR || USE_SDL
 
-#if LV_USE_GPU_SDL
-# error "LV_USE_GPU_SDL must not be enabled"
+#if LV_USE_DRAW_SDL 
+# error "LV_USE_DRAW_SDL must not be enabled"
 #endif
 
 #if USE_MONITOR
@@ -47,6 +47,7 @@
 # define SDL_FULLSCREEN        0
 #endif
 
+#include "sdl_common_internal.h"
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
@@ -59,6 +60,9 @@
 #define KEYBOARD_BUFFER_SIZE SDL_TEXTINPUTEVENT_TEXT_SIZE
 #endif
 
+#ifndef SDL_WINDOW_TITLE
+#define SDL_WINDOW_TITLE "TFT Simulator"
+#endif
 /**********************
  *      TYPEDEFS
  **********************/
@@ -95,17 +99,6 @@ monitor_t monitor;
 #if SDL_DUAL_DISPLAY
 monitor_t monitor2;
 #endif
-
-static volatile bool sdl_inited = false;
-
-static bool left_button_down = false;
-static int16_t last_x = 0;
-static int16_t last_y = 0;
-
-static int16_t wheel_diff = 0;
-static lv_indev_state_t wheel_state = LV_INDEV_STATE_RELEASED;
-
-static char buf[KEYBOARD_BUFFER_SIZE];
 
 /**********************
  *      MACROS
@@ -344,7 +337,7 @@ static void window_create(monitor_t * m)
     flag |= SDL_WINDOW_FULLSCREEN;
 #endif
 
-    m->window = SDL_CreateWindow("TFT Simulator",
+    m->window = SDL_CreateWindow(SDL_WINDOW_TITLE,
                               SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                               SDL_HOR_RES * SDL_ZOOM, SDL_VER_RES * SDL_ZOOM, flag);       /*last param. SDL_WINDOW_BORDERLESS to hide borders*/
 
@@ -375,7 +368,7 @@ static void window_update(monitor_t * m)
 #endif
     SDL_RenderClear(m->renderer);
     lv_disp_t * d = _lv_refr_get_disp_refreshing();
-    if(d->driver->screen_transp) {
+    if(d && d->driver->screen_transp) {
         SDL_SetRenderDrawColor(m->renderer, 0xff, 0, 0, 0xff);
         SDL_Rect r;
         r.x = 0; r.y = 0; r.w = SDL_HOR_RES; r.h = SDL_VER_RES;

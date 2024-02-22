@@ -9,19 +9,14 @@
 #include "drm.h"
 #if USE_DRM
 
-#include <unistd.h>
-#include <pthread.h>
-#include <time.h>
-#include <sys/time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
 #include <sys/mman.h>
-#include <inttypes.h>
+#include <unistd.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -41,7 +36,7 @@ struct drm_buffer {
 	uint32_t pitch;
 	uint32_t offset;
 	unsigned long int size;
-	void * map;
+	uint8_t * map;
 	uint32_t fb_handle;
 };
 
@@ -65,8 +60,9 @@ struct drm_dev {
 	drmModePropertyPtr plane_props[128];
 	drmModePropertyPtr crtc_props[128];
 	drmModePropertyPtr conn_props[128];
-	struct drm_buffer drm_bufs[2]; /* DUMB buffers */
-	struct drm_buffer *cur_bufs[2]; /* double buffering handling */
+	struct drm_buffer drm_bufs[2]; /*DUMB buffers*/
+	uint8_t active_drm_buf_idx; /*Double buffering handling*/
+	lv_disp_draw_buf_t draw_buf;
 } drm_dev;
 
 static uint32_t get_plane_property_id(const char *name)
@@ -117,7 +113,18 @@ static uint32_t get_conn_property_id(const char *name)
 static void page_flip_handler(int fd, unsigned int sequence, unsigned int tv_sec,
 			      unsigned int tv_usec, void *user_data)
 {
+	LV_UNUSED(fd);
+	LV_UNUSED(sequence);
+	LV_UNUSED(tv_sec);
+	LV_UNUSED(tv_usec);
+	LV_UNUSED(user_data);
+
 	dbg("flip");
+
+	if(drm_dev.req) {
+		drmModeAtomicFree(drm_dev.req);
+		drm_dev.req = NULL;
+	}
 }
 
 static int drm_get_plane_props(void)
@@ -244,7 +251,7 @@ static int drm_dmabuf_set_plane(struct drm_buffer *buf)
 {
 	int ret;
 	static int first = 1;
-	uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT;
+	uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
 
 	drm_dev.req = drmModeAtomicAlloc();
 
@@ -283,6 +290,7 @@ static int drm_dmabuf_set_plane(struct drm_buffer *buf)
 
 static int find_plane(unsigned int fourcc, uint32_t *plane_id, uint32_t crtc_id, uint32_t crtc_idx)
 {
+	LV_UNUSED(crtc_id);
 	drmModePlaneResPtr planes;
 	drmModePlanePtr plane;
 	unsigned int i;
@@ -393,7 +401,7 @@ static int drm_find_connector(void)
 	drm_dev.mmWidth = conn->mmWidth;
 	drm_dev.mmHeight = conn->mmHeight;
 
-	memcpy(&drm_dev.mode, &conn->modes[0], sizeof(drmModeModeInfo));
+	lv_memcpy(&drm_dev.mode, &conn->modes[0], sizeof(drmModeModeInfo));
 
 	if (drmModeCreatePropertyBlob(drm_dev.fd, &drm_dev.mode, sizeof(drm_dev.mode),
 				      &drm_dev.blob_id)) {
@@ -464,7 +472,7 @@ static int drm_find_connector(void)
 		drmModeFreeEncoder(enc);
 	}
 
-	drm_dev.crtc_idx = -1;
+	drm_dev.crtc_idx = UINT32_MAX;
 
 	for (i = 0; i < res->count_crtcs; ++i) {
 		if (drm_dev.crtc_id == res->crtcs[i]) {
@@ -473,7 +481,7 @@ static int drm_find_connector(void)
 		}
 	}
 
-	if (drm_dev.crtc_idx == -1) {
+	if (drm_dev.crtc_idx == UINT32_MAX) {
 		err("drm: CRTC not found");
 		goto free_res;
 	}
@@ -614,7 +622,7 @@ static int drm_allocate_dumb(struct drm_buffer *buf)
 	int ret;
 
 	/* create dumb buffer */
-	memset(&creq, 0, sizeof(creq));
+	lv_memset(&creq, 0, sizeof(creq));
 	creq.width = drm_dev.width;
 	creq.height = drm_dev.height;
 	creq.bpp = LV_COLOR_DEPTH;
@@ -626,12 +634,10 @@ static int drm_allocate_dumb(struct drm_buffer *buf)
 
 	buf->handle = creq.handle;
 	buf->pitch = creq.pitch;
-	dbg("pitch %d", buf->pitch);
 	buf->size = creq.size;
-	dbg("size %d", buf->size);
 
 	/* prepare buffer for memory mapping */
-	memset(&mreq, 0, sizeof(mreq));
+	lv_memset(&mreq, 0, sizeof(mreq));
 	mreq.handle = creq.handle;
 	ret = drmIoctl(drm_dev.fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq);
 	if (ret) {
@@ -640,6 +646,7 @@ static int drm_allocate_dumb(struct drm_buffer *buf)
 	}
 
 	buf->offset = mreq.offset;
+	info("size %lu pitch %u offset %u", buf->size, buf->pitch, buf->offset);
 
 	/* perform actual memory mapping */
 	buf->map = mmap(0, creq.size, PROT_READ | PROT_WRITE, MAP_SHARED, drm_dev.fd, mreq.offset);
@@ -649,7 +656,7 @@ static int drm_allocate_dumb(struct drm_buffer *buf)
 	}
 
 	/* clear the framebuffer to 0 (= full transparency in ARGB8888) */
-	memset(buf->map, 0, creq.size);
+	lv_memset(buf->map, 0, creq.size);
 
 	/* create framebuffer object for the dumb-buffer */
 	handles[0] = creq.handle;
@@ -669,7 +676,7 @@ static int drm_setup_buffers(void)
 {
 	int ret;
 
-	/* Allocate DUMB buffers */
+	/*Allocate DUMB buffers*/
 	ret = drm_allocate_dumb(&drm_dev.drm_bufs[0]);
 	if (ret)
 		return ret;
@@ -678,80 +685,61 @@ static int drm_setup_buffers(void)
 	if (ret)
 		return ret;
 
-	/* Set buffering handling */
-	drm_dev.cur_bufs[0] = NULL;
-	drm_dev.cur_bufs[1] = &drm_dev.drm_bufs[0];
-
 	return 0;
 }
 
-void drm_wait_vsync(lv_disp_drv_t *disp_drv)
+void drm_wait_vsync(lv_disp_drv_t * disp_drv)
 {
-	int ret;
-	fd_set fds;
-	FD_ZERO(&fds);
-	FD_SET(drm_dev.fd, &fds);
+	while(drm_dev.req) {
+		struct pollfd pfd;
+		pfd.fd = drm_dev.fd;
+		pfd.events = POLLIN;
 
-	do {
-		ret = select(drm_dev.fd + 1, &fds, NULL, NULL, NULL);
-	} while (ret == -1 && errno == EINTR);
+		int ret;
+		do {
+			ret = poll(&pfd, 1, -1);
+		} while (ret == -1 && errno == EINTR);
 
-	if (ret < 0) {
-		err("select failed: %s", strerror(errno));
-		drmModeAtomicFree(drm_dev.req);
-		drm_dev.req = NULL;
-		return;
+		if(ret > 0)
+			drmHandleEvent(drm_dev.fd, &drm_dev.drm_event_ctx);
+		else {
+			err("poll failed: %s", strerror(errno));
+			return;
+		}
 	}
-
-	if (FD_ISSET(drm_dev.fd, &fds))
-		drmHandleEvent(drm_dev.fd, &drm_dev.drm_event_ctx);
-
-	drmModeAtomicFree(drm_dev.req);
-	drm_dev.req = NULL;
-}
-
-void drm_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p)
-{
-	struct drm_buffer *fbuf = drm_dev.cur_bufs[1];
-	lv_coord_t w = (area->x2 - area->x1 + 1);
-	lv_coord_t h = (area->y2 - area->y1 + 1);
-	int i, y;
-
-	dbg("x %d:%d y %d:%d w %d h %d", area->x1, area->x2, area->y1, area->y2, w, h);
-
-	/* Partial update */
-	if ((w != drm_dev.width || h != drm_dev.height) && drm_dev.cur_bufs[0])
-		memcpy(fbuf->map, drm_dev.cur_bufs[0]->map, fbuf->size);
-
-	for (y = 0, i = area->y1 ; i <= area->y2 ; ++i, ++y) {
-                memcpy((uint8_t *)fbuf->map + (area->x1 * (LV_COLOR_SIZE/8)) + (fbuf->pitch * i),
-                       (uint8_t *)color_p + (w * (LV_COLOR_SIZE/8) * y),
-		       w * (LV_COLOR_SIZE/8));
-	}
-
-	if (drm_dev.req)
-		drm_wait_vsync(disp_drv);
-
-	/* show fbuf plane */
-	if (drm_dmabuf_set_plane(fbuf)) {
-		err("Flush fail");
-		return;
-	}
-	else
-		dbg("Flush done");
-
-	if (!drm_dev.cur_bufs[0])
-		drm_dev.cur_bufs[1] = &drm_dev.drm_bufs[1];
-	else
-		drm_dev.cur_bufs[1] = drm_dev.cur_bufs[0];
-
-	drm_dev.cur_bufs[0] = fbuf;
 
 	lv_disp_flush_ready(disp_drv);
 }
 
+void drm_flush(lv_disp_drv_t * disp_drv, const lv_area_t * area, lv_color_t * color_p)
+{
+	struct drm_buffer *fbuf = &drm_dev.drm_bufs[drm_dev.active_drm_buf_idx ^ 1];
+
+	if(!disp_drv->direct_mode) {
+		/*Backwards compatibility: Non-direct flush */
+		uint32_t w = (area->x2 - area->x1) + 1;
+		for (int y = 0, i = area->y1; i <= area->y2 ; ++i, ++y) {
+			lv_memcpy(fbuf->map + (area->x1 * (LV_COLOR_SIZE / 8)) + (fbuf->pitch * i),
+			          (uint8_t *)color_p + (w * (LV_COLOR_SIZE / 8) * y),
+			          w * (LV_COLOR_SIZE / 8));
+		}
+	}
+
+	if(lv_disp_flush_is_last(disp_drv)) {
+		/*Request buffer swap*/
+		if(drm_dmabuf_set_plane(fbuf)) {
+			err("Flush fail");
+			return;
+		}
+		else
+			dbg("Flush done");
+
+		drm_dev.active_drm_buf_idx ^= 1;
+	}
+}
+
 #if LV_COLOR_DEPTH == 32
-#define DRM_FOURCC DRM_FORMAT_ARGB8888
+#define DRM_FOURCC DRM_FORMAT_XRGB8888
 #elif LV_COLOR_DEPTH == 16
 #define DRM_FOURCC DRM_FORMAT_RGB565
 #else
@@ -770,7 +758,7 @@ void drm_get_sizes(lv_coord_t *width, lv_coord_t *height, uint32_t *dpi)
 		*dpi = DIV_ROUND_UP(drm_dev.width * 25400, drm_dev.mmWidth * 1000);
 }
 
-void drm_init(void)
+int drm_init(void)
 {
 	int ret;
 
@@ -778,7 +766,7 @@ void drm_init(void)
 	if (ret) {
 		close(drm_dev.fd);
 		drm_dev.fd = -1;
-		return;
+		return -1;
 	}
 
 	ret = drm_setup_buffers();
@@ -786,10 +774,28 @@ void drm_init(void)
 		err("DRM buffer allocation failed");
 		close(drm_dev.fd);
 		drm_dev.fd = -1;
-		return;
+		return -1;
 	}
 
 	info("DRM subsystem and buffer mapped successfully");
+	return 0;
+}
+
+int drm_disp_drv_init(lv_disp_drv_t * disp_drv)
+{
+	lv_disp_drv_init(disp_drv);
+
+	int ret = drm_init();
+	if(ret) return ret;
+
+	lv_disp_draw_buf_init(&drm_dev.draw_buf, drm_dev.drm_bufs[1].map, drm_dev.drm_bufs[0].map, drm_dev.width * drm_dev.height);
+	disp_drv->draw_buf = &drm_dev.draw_buf;
+	disp_drv->direct_mode = true;
+	disp_drv->hor_res = drm_dev.width;
+	disp_drv->ver_res = drm_dev.height;
+	disp_drv->flush_cb = drm_flush;
+	disp_drv->wait_cb = drm_wait_vsync;
+	return 0;
 }
 
 void drm_exit(void)
