@@ -40,7 +40,7 @@ pub fn deinitInput() void {
 }
 
 pub usingnamespace switch (buildopts.driver) {
-    .sdl2 => struct {
+    .sdl2, .x11 => struct {
         pub fn InputWatcher() !type {
             return error.InputWatcherUnavailable;
         }

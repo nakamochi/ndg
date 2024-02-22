@@ -20,6 +20,10 @@ pipeline:
     image: git.qcode.ch/nakamochi/ci-zig0.11.0:v2
     commands:
       - zig build -Ddriver=sdl2
+  x11:
+    image: git.qcode.ch/nakamochi/ci-zig0.11.0:v2
+    commands:
+      - zig build -Ddriver=x11
   aarch64:
     image: git.qcode.ch/nakamochi/ci-zig0.11.0:v2
     commands:

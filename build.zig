@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const strip = b.option(bool, "strip", "strip output binary; default: false") orelse false;
-    const drv = b.option(DriverTarget, "driver", "display and input drivers combo; default: sdl2") orelse .sdl2;
+    const drv = b.option(DriverTarget, "driver", "display and input drivers combo; default: x11") orelse .x11;
     const disp_horiz = b.option(u32, "horiz", "display horizontal pixels count; default: 800") orelse 800;
     const disp_vert = b.option(u32, "vert", "display vertical pixels count; default: 480") orelse 480;
     const lvgl_loglevel = b.option(LVGLLogLevel, "lvgl_loglevel", "LVGL lib logging level") orelse LVGLLogLevel.default(optimize);
@@ -78,16 +78,23 @@ pub fn build(b: *std.Build) void {
         .sdl2 => {
             ngui.addCSourceFiles(lvgl_sdl2_src, &lvgl_flags);
             ngui.addCSourceFile(.{ .file = .{ .path = "src/ui/c/drv_sdl2.c" }, .flags = &ngui_cflags });
-            ngui.defineCMacro("NM_DRV_SDL2", null);
-            ngui.defineCMacro("USE_SDL", null);
+            ngui.defineCMacro("USE_SDL", "1");
             ngui.linkSystemLibrary("SDL2");
+        },
+        .x11 => {
+            ngui.addCSourceFiles(lvgl_x11_src, &lvgl_flags);
+            ngui.addCSourceFiles(&.{
+                "src/ui/c/drv_x11.c",
+                "src/ui/c/mouse_cursor_icon.c",
+            }, &ngui_cflags);
+            ngui.defineCMacro("USE_X11", "1");
+            ngui.linkSystemLibrary("X11");
         },
         .fbev => {
             ngui.addCSourceFiles(lvgl_fbev_src, &lvgl_flags);
             ngui.addCSourceFile(.{ .file = .{ .path = "src/ui/c/drv_fbev.c" }, .flags = &ngui_cflags });
-            ngui.defineCMacro("NM_DRV_FBEV", null);
-            ngui.defineCMacro("USE_FBDEV", null);
-            ngui.defineCMacro("USE_EVDEV", null);
+            ngui.defineCMacro("USE_FBDEV", "1");
+            ngui.defineCMacro("USE_EVDEV", "1");
         },
     }
 
@@ -183,12 +190,17 @@ pub fn build(b: *std.Build) void {
 
 const DriverTarget = enum {
     sdl2,
+    x11,
     fbev, // framebuffer + evdev
 };
 
 const lvgl_sdl2_src: []const []const u8 = &.{
     "lib/lv_drivers/sdl/sdl.c",
     "lib/lv_drivers/sdl/sdl_common.c",
+};
+
+const lvgl_x11_src: []const []const u8 = &.{
+    "lib/lv_drivers/x11/x11.c",
 };
 
 const lvgl_fbev_src: []const []const u8 = &.{

@@ -1,10 +1,13 @@
 # nakamochi daemon and gui (ndg)
 
-build for rpi:
+release build for linux/aarch64, a raspberry pi 4:
 
     zig build -Dtarget=aarch64-linux-musl -Ddriver=fbev -Doptimize=ReleaseSafe -Dstrip
 
-otherwise just `zig build` on dev host
+a dev build for a native arch linux host running Xorg can be compiled simply
+with `zig build`. otherwise, for macOS or non-X11 platforms use SDL2:
+
+    zig build -Ddriver=sdl2
 
 ## local development
 

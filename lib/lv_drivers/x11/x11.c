@@ -145,12 +145,12 @@ static void lv_x11_hide_cursor()
 void lv_x11_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p)
 {
 #if X11_OPTIMIZED_SCREEN_UPDATE
-    static const lv_area_t inv_area = { .x1 = 0xFFFF,
-                                        .x2 = 0,
-                                        .y1 = 0xFFFF,
-                                        .y2 = 0
-                                      };
-    static lv_area_t upd_area = inv_area;
+    static lv_area_t upd_area = {
+        .x1 = 0xFFFF,
+        .x2 = 0,
+        .y1 = 0xFFFF,
+        .y2 = 0
+    };
 
     /* build display update area until lv_disp_flush_is_last */
     upd_area.x1 = MIN(upd_area.x1, area->x1);
@@ -177,7 +177,10 @@ void lv_x11_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *co
         lv_coord_t upd_h = upd_area.y2 - upd_area.y1 + 1;
         XPutImage(display, window, gc, ximage, upd_area.x1, upd_area.y1, upd_area.x1, upd_area.y1, upd_w, upd_h);
         /* invalidate collected area */
-        upd_area = inv_area;
+        upd_area.x1 = 0xFFFF;
+        upd_area.x2 = 0;
+        upd_area.y1 = 0xFFFF;
+        upd_area.y2 = 0;
 #else
         /* refresh full display */
         XPutImage(display, window, gc, ximage, 0, 0, 0, 0, LV_HOR_RES, LV_VER_RES);
