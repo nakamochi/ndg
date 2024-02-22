@@ -314,7 +314,12 @@ bool lv_obj_remove_local_style_prop(lv_obj_t * obj, lv_style_prop_t prop, lv_sty
     /*The style is not found*/
     if(i == obj->style_cnt) return false;
 
-    return lv_style_remove_prop(obj->styles[i].style, prop);
+    lv_res_t res = lv_style_remove_prop(obj->styles[i].style, prop);
+    if(res == LV_RES_OK) {
+        lv_obj_refresh_style(obj, selector, prop);
+    }
+
+    return res;
 }
 
 void _lv_obj_style_create_transition(lv_obj_t * obj, lv_part_t part, lv_state_t prev_state, lv_state_t new_state,
@@ -490,6 +495,40 @@ lv_text_align_t lv_obj_calculate_style_text_align(const struct _lv_obj_t * obj, 
     lv_bidi_calculate_align(&align, &base_dir, txt);
     return align;
 }
+
+lv_opa_t lv_obj_get_style_opa_recursive(const lv_obj_t * obj, lv_part_t part)
+{
+
+    lv_opa_t opa_obj = lv_obj_get_style_opa(obj, part);
+    if(opa_obj <= LV_OPA_MIN) return LV_OPA_TRANSP;
+
+    lv_opa_t opa_final = LV_OPA_COVER;
+    if(opa_obj < LV_OPA_MAX) {
+        opa_final = ((uint32_t)opa_final * opa_obj) >> 8;
+    }
+
+    if(part != LV_PART_MAIN) {
+        part = LV_PART_MAIN;
+    }
+    else {
+        obj = lv_obj_get_parent(obj);
+    }
+
+    while(obj) {
+        opa_obj = lv_obj_get_style_opa(obj, part);
+        if(opa_obj <= LV_OPA_MIN) return LV_OPA_TRANSP;
+        if(opa_obj < LV_OPA_MAX) {
+            opa_final = ((uint32_t)opa_final * opa_obj) >> 8;
+        }
+
+        obj = lv_obj_get_parent(obj);
+    }
+
+    if(opa_final <= LV_OPA_MIN) return LV_OPA_TRANSP;
+    if(opa_final >= LV_OPA_MAX) return LV_OPA_COVER;
+    return opa_final;
+}
+
 
 /**********************
  *   STATIC FUNCTIONS
@@ -744,6 +783,7 @@ static void trans_anim_cb(void * _tr, int32_t v)
                 else value_final.ptr = tr->end_value.ptr;
                 break;
             case LV_STYLE_BG_COLOR:
+            case LV_STYLE_BG_GRAD_COLOR:
             case LV_STYLE_BORDER_COLOR:
             case LV_STYLE_TEXT_COLOR:
             case LV_STYLE_SHADOW_COLOR:
@@ -840,8 +880,7 @@ static lv_layer_type_t calculate_layer_type(lv_obj_t * obj)
 {
     if(lv_obj_get_style_transform_angle(obj, 0) != 0) return LV_LAYER_TYPE_TRANSFORM;
     if(lv_obj_get_style_transform_zoom(obj, 0) != 256) return LV_LAYER_TYPE_TRANSFORM;
-    if(lv_obj_get_style_opa(obj, 0) != LV_OPA_COVER) return LV_LAYER_TYPE_SIMPLE;
-
+    if(lv_obj_get_style_opa_layered(obj, 0) != LV_OPA_COVER) return LV_LAYER_TYPE_SIMPLE;
 #if LV_DRAW_COMPLEX
     if(lv_obj_get_style_blend_mode(obj, 0) != LV_BLEND_MODE_NORMAL) return LV_LAYER_TYPE_SIMPLE;
 #endif
