@@ -102,29 +102,37 @@ extern void preserve_main_active_tab()
     lv_tabview_set_act(tabview, lv_tabview_get_tab_act(tabview), LV_ANIM_OFF);
 }
 
-static void textarea_event_cb(lv_event_t *e)
+extern void nm_keyboard_popon(lv_obj_t *input)
+{
+    lv_keyboard_set_textarea(virt_keyboard, input);
+    lv_obj_update_layout(tabview); /* make sure sizes are recalculated */
+    lv_obj_set_height(tabview, NM_DISP_VER - lv_obj_get_height(virt_keyboard));
+    lv_obj_clear_flag(virt_keyboard, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_scroll_to_view_recursive(input, LV_ANIM_OFF);
+}
+
+extern void nm_keyboard_popoff()
+{
+    lv_keyboard_set_textarea(virt_keyboard, NULL);
+    lv_obj_add_flag(virt_keyboard, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_height(tabview, NM_DISP_VER);
+}
+
+static void wifi_pwd_input_cb(lv_event_t *e)
 {
     lv_obj_t *textarea = lv_event_get_target(e);
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_FOCUSED) {
         if (lv_indev_get_type(lv_indev_get_act()) != LV_INDEV_TYPE_KEYPAD) {
-            lv_keyboard_set_textarea(virt_keyboard, textarea);
-            lv_obj_set_style_max_height(virt_keyboard, NM_DISP_HOR * 2 / 3, 0);
-            lv_obj_update_layout(tabview); /* make sure sizes are recalculated */
-            lv_obj_set_height(tabview, NM_DISP_VER - lv_obj_get_height(virt_keyboard));
-            lv_obj_clear_flag(virt_keyboard, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_scroll_to_view_recursive(textarea, LV_ANIM_OFF);
+            nm_keyboard_popon(textarea);
         }
     } else if (code == LV_EVENT_DEFOCUSED) {
-        lv_keyboard_set_textarea(virt_keyboard, NULL);
-        lv_obj_set_height(tabview, NM_DISP_VER);
-        lv_obj_add_flag(virt_keyboard, LV_OBJ_FLAG_HIDDEN);
-        lv_indev_reset(NULL, textarea);
-    } else if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
-        lv_obj_set_height(tabview, NM_DISP_VER);
-        lv_obj_add_flag(virt_keyboard, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_state(textarea, LV_STATE_FOCUSED);
+        nm_keyboard_popoff();
         lv_indev_reset(NULL, textarea); /* forget last obj to make it focusable again */
+    } else if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+        nm_keyboard_popoff();
+        lv_indev_reset(NULL, textarea); /* forget last obj to make it focusable again */
+        lv_obj_clear_state(textarea, LV_STATE_FOCUSED);
     }
 }
 
@@ -202,7 +210,7 @@ static int create_settings_panel(lv_obj_t *parent)
     settings.wifi_pwd_obj = wifi_pwd;
     lv_textarea_set_one_line(wifi_pwd, true);
     lv_textarea_set_password_mode(wifi_pwd, true);
-    lv_obj_add_event_cb(wifi_pwd, textarea_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_add_event_cb(wifi_pwd, wifi_pwd_input_cb, LV_EVENT_ALL, NULL);
 
     lv_obj_t *wifi_connect_btn = lv_btn_create(wifi_panel);
     settings.wifi_connect_btn_obj = wifi_connect_btn;
@@ -335,6 +343,7 @@ extern int nm_ui_init(lv_disp_t *disp)
         /* TODO: or continue without keyboard? */
         return -1;
     }
+    lv_obj_set_style_max_height(virt_keyboard, NM_DISP_HOR * 2 / 3, 0);
     lv_obj_add_flag(virt_keyboard, LV_OBJ_FLAG_HIDDEN);
 
     const lv_coord_t tabh = 60;

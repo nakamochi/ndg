@@ -3,6 +3,23 @@ const lvgl = @import("lvgl.zig");
 
 const logger = std.log.scoped(.ui);
 
+// defined in ui.c
+extern fn nm_keyboard_popon(input: *lvgl.LvObj) void;
+extern fn nm_keyboard_popoff() void;
+
+/// show keyboard on the default display and attach it to a UI input widget.
+/// the widget is any `lvgl.BaseObjMethods`.
+/// TODO: at the moment, the parent layer is always assumed to be the tabview,
+/// and it is resized to fit the keyboard. this won't work for a pop up screen like the `modal`.
+pub fn keyboardOn(input: anytype) void {
+    nm_keyboard_popon(input.lvobj);
+}
+
+/// hides the keyboard and restores the tabview dimensions.
+pub fn keyboardOff() void {
+    nm_keyboard_popoff();
+}
+
 /// creates an opposite of a backdrop: a plain black square on the top layer
 /// covering the whole screen. useful for standby/sleep mode on systems where
 /// cutting screen power is unsupported.
