@@ -32,6 +32,9 @@ uireader: std.fs.File.Reader, // ngui stdout
 uiwriter: std.fs.File.Writer, // ngui stdin
 wpa_ctrl: types.WpaControl, // guarded by mu once start'ed
 
+/// used only in comm thread; move under mu when no longer the case
+screenstate: enum { locked, unlocked },
+
 /// guards all the fields below to sync between pub fns and main/poweroff threads.
 mu: std.Thread.Mutex = .{},
 
@@ -118,7 +121,7 @@ const Error = error{
 
 const InitOpt = struct {
     allocator: std.mem.Allocator,
-    confpath: []const u8,
+    conf: Config,
     uir: std.fs.File.Reader,
     uiw: std.fs.File.Writer,
     wpa: [:0]const u8,
@@ -138,15 +141,14 @@ pub fn init(opt: InitOpt) !Daemon {
     try svlist.append(sys.Service.init(opt.allocator, sys.Service.LND, .{ .stop_wait_sec = 600 }));
     try svlist.append(sys.Service.init(opt.allocator, sys.Service.BITCOIND, .{ .stop_wait_sec = 600 }));
 
-    const conf = try Config.init(opt.allocator, opt.confpath);
-    errdefer conf.deinit();
     return .{
         .allocator = opt.allocator,
-        .conf = conf,
+        .conf = opt.conf,
         .uireader = opt.uir,
         .uiwriter = opt.uiw,
         .wpa_ctrl = try types.WpaControl.open(opt.wpa),
         .state = .stopped,
+        .screenstate = if (opt.conf.data.slock != null) .locked else .unlocked,
         .services = .{ .list = try svlist.toOwnedSlice() },
         // send persisted settings immediately on start
         .want_settings = true,
@@ -168,7 +170,6 @@ pub fn init(opt: InitOpt) !Daemon {
 pub fn deinit(self: *Daemon) void {
     self.wpa_ctrl.close() catch |err| logger.err("deinit: wpa_ctrl.close: {any}", .{err});
     self.services.deinit(self.allocator);
-    self.conf.deinit();
 }
 
 /// start launches daemon threads and returns immediately.
@@ -184,6 +185,7 @@ pub fn start(self: *Daemon) !void {
     }
 
     try self.wpa_ctrl.attach();
+    self.want_stop = false;
     errdefer {
         self.wpa_ctrl.detach() catch {};
         self.want_stop = true;
@@ -224,7 +226,6 @@ pub fn wait(self: *Daemon) void {
     }
 
     self.wpa_ctrl.detach() catch |err| logger.err("wait: wpa_ctrl.detach: {any}", .{err});
-    self.want_stop = false;
     self.state = .stopped;
 }
 
@@ -237,8 +238,16 @@ fn standby(self: *Daemon) !void {
         .stopped, .poweroff => return Error.InvalidState,
         .wallet_reset => return Error.WalletResetActive,
         .running => {
-            try screen.backlight(.off);
+            const has_lock = self.conf.safeReadOnly(struct {
+                fn f(data: Config.Data, _: Config.StaticData) bool {
+                    return data.slock != null;
+                }
+            }.f);
+            if (has_lock) {
+                self.screenstate = .locked;
+            }
             self.state = .standby;
+            try screen.backlight(.off);
         },
     }
 }
@@ -338,6 +347,7 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
             fn f(conf: Config.Data, static: Config.StaticData) bool {
                 const msg: comm.Message.Settings = .{
                     .hostname = static.hostname,
+                    .slock_enabled = conf.slock != null,
                     .sysupdates = .{
                         .channel = switch (conf.syschannel) {
                             .dev => .edge,
@@ -374,6 +384,7 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
 
     // onchain bitcoin stats
     if (self.want_onchain_report or self.bitcoin_timer.read() > self.onchain_report_interval) {
+        // TODO: this takes too long; run in a separate thread
         if (self.sendOnchainReport()) {
             self.bitcoin_timer.reset();
             self.want_onchain_report = false;
@@ -385,6 +396,7 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
     // lightning stats
     if (self.state != .wallet_reset) {
         if (self.want_lnd_report or self.lnd_timer.read() > self.lnd_report_interval) {
+            // TODO: this takes too long; run in a separate thread
             if (self.sendLightningReport()) {
                 self.lnd_timer.reset();
                 self.want_lnd_report = false;
@@ -439,9 +451,13 @@ fn commThreadLoop(self: *Daemon) void {
                 self.reportNetworkStatus(.{ .scan = req.scan });
             },
             .wifi_connect => |req| {
-                self.startConnectWifi(req.ssid, req.password) catch |err| {
-                    logger.err("startConnectWifi: {any}", .{err});
-                };
+                if (self.screenstate != .locked) {
+                    self.startConnectWifi(req.ssid, req.password) catch |err| {
+                        logger.err("startConnectWifi: {any}", .{err});
+                    };
+                } else {
+                    logger.warn("refusing wifi connect: screen is locked", .{});
+                }
             },
             .standby => {
                 logger.info("entering standby mode", .{});
@@ -452,38 +468,68 @@ fn commThreadLoop(self: *Daemon) void {
                 self.wakeup() catch |err| logger.err("nd.wakeup: {any}", .{err});
             },
             .switch_sysupdates => |chan| {
-                logger.info("switching sysupdates channel to {s}", .{@tagName(chan)});
-                self.switchSysupdates(chan) catch |err| {
-                    logger.err("switchSysupdates: {any}", .{err});
-                    // TODO: send err back to ngui
-                };
+                if (self.screenstate != .locked) {
+                    logger.info("switching sysupdates channel to {s}", .{@tagName(chan)});
+                    self.switchSysupdates(chan) catch |err| {
+                        logger.err("switchSysupdates: {any}", .{err});
+                        // TODO: send err back to ngui
+                    };
+                } else {
+                    logger.warn("ignoring sysupdates switch: screen is locked", .{});
+                }
             },
             .set_nodename => |newname| {
-                self.setNodename(newname) catch |err| {
-                    logger.err("setNodename: {!}", .{err});
-                    // TODO: send err back to ngui
-                };
+                if (self.screenstate != .locked) {
+                    self.setNodename(newname) catch |err| {
+                        logger.err("setNodename: {!}", .{err});
+                        // TODO: send err back to ngui
+                    };
+                } else {
+                    logger.warn("ignoring nodename change: screen is locked", .{});
+                }
             },
             .lightning_genseed => {
+                // non commital: ok even if the screen is locked
                 self.generateWalletSeed() catch |err| {
                     logger.err("generateWalletSeed: {!}", .{err});
                     // TODO: send err back to ngui
                 };
             },
             .lightning_init_wallet => |req| {
-                self.initWallet(req) catch |err| {
-                    logger.err("initWallet: {!}", .{err});
-                    // TODO: send err back to ngui
-                };
+                if (self.screenstate != .locked) {
+                    self.initWallet(req) catch |err| {
+                        logger.err("initWallet: {!}", .{err});
+                        // TODO: send err back to ngui
+                    };
+                } else {
+                    logger.warn("ignoring lnd wallet init: screen is locked", .{});
+                }
             },
             .lightning_get_ctrlconn => {
-                self.sendLightningPairingConn() catch |err| {
-                    logger.err("sendLightningPairingConn: {!}", .{err});
-                    // TODO: send err back to ngui
-                };
+                if (self.screenstate != .locked) {
+                    self.sendLightningPairingConn() catch |err| {
+                        logger.err("sendLightningPairingConn: {!}", .{err});
+                        // TODO: send err back to ngui
+                    };
+                } else {
+                    logger.warn("refusing to give out lnd pairing: screen is locked", .{});
+                }
             },
             .lightning_reset => {
-                self.resetLndNode() catch |err| logger.err("resetLndNode: {!}", .{err});
+                if (self.screenstate != .locked) {
+                    self.resetLndNode() catch |err| logger.err("resetLndNode: {!}", .{err});
+                } else {
+                    logger.warn("refusing lnd reset: screen is locked", .{});
+                }
+            },
+            .slock_set_pincode => |pincode_or_null| {
+                self.conf.setSlockPin(pincode_or_null) catch |err| logger.err("conf.setSlockPin: {!}", .{err});
+                self.mu.lock();
+                self.want_settings = true;
+                self.mu.unlock();
+            },
+            .unlock_screen => |pincode| {
+                self.unlockScreen(pincode) catch |err| logger.err("unlockScreen: {!}", .{err});
             },
             else => |v| logger.warn("unhandled msg tag {s}", .{@tagName(v)}),
         }
@@ -494,6 +540,24 @@ fn commThreadLoop(self: *Daemon) void {
     }
 
     logger.info("exiting comm thread loop", .{});
+}
+
+/// all callers must belong to comm thread due to self.screenstate access.
+fn unlockScreen(self: *Daemon, pincode: []const u8) !void {
+    const pindup = try self.allocator.dupe(u8, pincode);
+    defer self.allocator.free(pindup);
+    // TODO: slow down
+    self.conf.verifySlockPin(pindup) catch |err| {
+        logger.err("verifySlockPin: {!}", .{err});
+        const errmsg: comm.Message = .{ .screen_unlock_result = .{
+            .ok = false,
+            .err = if (err == error.IncorrectSlockPin) "incorrect pin code" else "unlock failed",
+        } };
+        return comm.write(self.allocator, self.uiwriter, errmsg);
+    };
+    const ok: comm.Message = .{ .screen_unlock_result = .{ .ok = true } };
+    comm.write(self.allocator, self.uiwriter, ok) catch |err| logger.err("{!}", .{err});
+    self.screenstate = .unlocked;
 }
 
 /// sends poweroff progress to uiwriter in comm.Message.PoweroffProgress format.
@@ -1217,17 +1281,18 @@ fn allocSanitizeNodename(allocator: std.mem.Allocator, name: []const u8) ![]cons
     return allocator.dupe(u8, trimmed);
 }
 
-test "start-stop" {
+test "daemon: start-stop" {
     const t = std.testing;
 
     const pipe = try types.IoPipe.create();
     var daemon = try Daemon.init(.{
         .allocator = t.allocator,
-        .confpath = "/unused.json",
+        .conf = try dummyTestConfig(),
         .uir = pipe.reader(),
         .uiw = pipe.writer(),
         .wpa = "/dev/null",
     });
+    defer daemon.conf.deinit();
     daemon.want_settings = false;
     daemon.want_network_report = false;
     daemon.want_onchain_report = false;
@@ -1262,7 +1327,7 @@ test "start-stop" {
     try t.expect(!daemon.wpa_ctrl.opened);
 }
 
-test "start-poweroff" {
+test "daemon: start-poweroff" {
     const t = std.testing;
     const tt = @import("../test.zig");
 
@@ -1275,7 +1340,7 @@ test "start-poweroff" {
     const gui_reader = gui_stdin.reader();
     var daemon = try Daemon.init(.{
         .allocator = arena,
-        .confpath = "/unused.json",
+        .conf = try dummyTestConfig(),
         .uir = gui_stdout.reader(),
         .uiw = gui_stdin.writer(),
         .wpa = "/dev/null",
@@ -1286,6 +1351,7 @@ test "start-poweroff" {
     daemon.want_lnd_report = false;
     defer {
         daemon.deinit();
+        daemon.conf.deinit();
         gui_stdin.close();
     }
 
@@ -1325,4 +1391,79 @@ test "start-poweroff" {
     // TODO: ensure "poweroff" was executed once custom runner is in a zig release;
     // need custom runner to set up a global registry for child processes.
     // https://github.com/ziglang/zig/pull/13411
+}
+
+test "daemon: screen unlock" {
+    const t = std.testing;
+    const tt = @import("../test.zig");
+
+    var arena_alloc = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_alloc.deinit();
+    const arena = arena_alloc.allocator();
+    var tmp = try tt.TempDir.create();
+    defer tmp.cleanup();
+    const correct_pin = "12345";
+    var ndconf = try Config.init(t.allocator, try tmp.join(&.{"ndconf.json"}));
+    defer ndconf.deinit();
+    try ndconf.setSlockPin(correct_pin);
+
+    const gui_stdin = try types.IoPipe.create();
+    const gui_stdout = try types.IoPipe.create();
+    const gui_reader = gui_stdin.reader();
+    var daemon = try Daemon.init(.{
+        .allocator = arena,
+        .conf = ndconf,
+        .uir = gui_stdout.reader(),
+        .uiw = gui_stdin.writer(),
+        .wpa = "/dev/null",
+    });
+    defer {
+        daemon.deinit();
+        gui_stdin.close();
+    }
+    daemon.want_settings = false;
+    daemon.want_network_report = false;
+    daemon.want_onchain_report = false;
+    daemon.want_lnd_report = false;
+
+    try daemon.start();
+    try t.expect(daemon.screenstate == .locked);
+    try comm.write(arena, gui_stdout.writer(), .{ .unlock_screen = "000" });
+    try comm.write(arena, gui_stdout.writer(), .{ .unlock_screen = correct_pin });
+
+    {
+        const msg = try comm.read(arena, gui_reader);
+        try t.expect(!msg.value.screen_unlock_result.ok);
+    }
+    {
+        const msg = try comm.read(arena, gui_reader);
+        try t.expect(msg.value.screen_unlock_result.ok);
+    }
+
+    daemon.stop();
+    gui_stdout.close();
+    daemon.wait();
+    try t.expect(daemon.screenstate == .unlocked);
+}
+
+fn dummyTestConfig() !Config {
+    const talloc = std.testing.allocator;
+    var arena = try talloc.create(std.heap.ArenaAllocator);
+    arena.* = std.heap.ArenaAllocator.init(talloc);
+    return Config{
+        .arena = arena,
+        .confpath = "/dummy.conf",
+        .data = .{
+            .slock = null,
+            .syschannel = .master,
+            .syscronscript = "",
+            .sysrunscript = "",
+        },
+        .static = .{
+            .hostname = "testhost",
+            .lnd_user = null,
+            .lnd_tor_hostname = null,
+            .bitcoind_rpc_pass = null,
+        },
+    };
 }

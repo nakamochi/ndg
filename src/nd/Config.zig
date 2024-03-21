@@ -40,7 +40,13 @@ data: Data,
 
 /// top struct stored on disk.
 /// access with `safeReadOnly` or lock/unlock `mu`.
+///
+/// for backwards compatibility, all newly introduced fields must have default values.
 pub const Data = struct {
+    slock: ?struct { // null indicates screenlock is disabled
+        bcrypt_hash: []const u8, // std.crypto.bcrypt .phc format
+        incorrect_attempts: u8, // reset after each successful unlock
+    } = null,
     syschannel: SysupdatesChannel,
     syscronscript: []const u8,
     sysrunscript: []const u8,
@@ -173,6 +179,50 @@ pub fn safeReadOnly(self: *Config, comptime F: anytype) @typeInfo(@TypeOf(F)).Fn
     self.mu.lockShared();
     defer self.mu.unlockShared();
     return F(self.data, self.static);
+}
+
+/// matches the `input` against the hash in `Data.slock.bcrypt_hash` previously set with `setSlockPin`.
+/// incrementing `Data.slock.incorrect_attempts` each unsuccessful result.
+/// the number of attemps are persisted at `Config.confpath` upon function return.
+pub fn verifySlockPin(self: *Config, input: []const u8) !void {
+    self.mu.lock();
+    defer self.mu.unlock();
+    const slock = self.data.slock orelse return;
+    defer self.dumpUnguarded() catch |errdump| logger.err("dumpUnguarded: {!}", .{errdump});
+    std.crypto.pwhash.bcrypt.strVerify(slock.bcrypt_hash, input, .{}) catch |err| {
+        if (err == error.PasswordVerificationFailed) {
+            self.data.slock.?.incorrect_attempts += 1;
+            return error.IncorrectSlockPin;
+        }
+        logger.err("bcrypt.strVerify: {!}", .{err});
+        return err;
+    };
+    self.data.slock.?.incorrect_attempts = 0;
+}
+
+/// enables or disables screenlock, persistently. null `code` indicates disabled.
+/// safe for concurrent use.
+pub fn setSlockPin(self: *Config, code: ?[]const u8) !void {
+    self.mu.lock();
+    defer self.mu.unlock();
+    // TODO: free existing slock.bcrypt_hash? it is in arena but still
+    if (code) |s| {
+        const bcrypt = std.crypto.pwhash.bcrypt;
+        const opt: bcrypt.HashOptions = .{
+            .params = .{ .rounds_log = 12 },
+            .encoding = .phc,
+            .silently_truncate_password = false,
+        };
+        var buf: [bcrypt.hash_length * 2]u8 = undefined;
+        const hash = try bcrypt.strHash(s, opt, &buf);
+        self.data.slock = .{
+            .bcrypt_hash = try self.arena.allocator().dupe(u8, hash),
+            .incorrect_attempts = 0,
+        };
+    } else {
+        self.data.slock = null;
+    }
+    try self.dumpUnguarded();
 }
 
 /// used by mutateLndConf to guard concurrent access.
@@ -680,4 +730,93 @@ test "ndconfig: mutate LndConf" {
         \\alias=newalias
         \\
     , cont);
+}
+
+test "ndconfig: screen lock" {
+    const t = std.testing;
+    const tt = @import("../test.zig");
+
+    // Config auto-deinits the arena.
+    var conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+    conf_arena.* = std.heap.ArenaAllocator.init(t.allocator);
+    var tmp = try tt.TempDir.create();
+    defer tmp.cleanup();
+
+    // nonexistent config file
+    {
+        var conf = try init(t.allocator, "/nonexistent.json");
+        defer conf.deinit();
+        try t.expect(conf.data.slock == null);
+        try conf.verifySlockPin("");
+        try conf.verifySlockPin("any");
+    }
+
+    // conf file without slock field
+    {
+        const confpath = try tmp.join(&.{"conf.json"});
+        try tmp.dir.writeFile(confpath,
+            \\{
+            \\"syschannel": "dev",
+            \\"syscronscript": "/cron/sysupdates.sh",
+            \\"sysrunscript": "/sysupdates/run.sh"
+            \\}
+        );
+        var conf = try init(t.allocator, confpath);
+        defer conf.deinit();
+        try t.expect(conf.data.slock == null);
+        try conf.verifySlockPin("");
+        try conf.verifySlockPin("0000");
+    }
+
+    // conf file with null slock
+    {
+        const confpath = try tmp.join(&.{"conf.json"});
+        try tmp.dir.writeFile(confpath,
+            \\{
+            \\"slock": null,
+            \\"syschannel": "dev",
+            \\"syscronscript": "/cron/sysupdates.sh",
+            \\"sysrunscript": "/sysupdates/run.sh"
+            \\}
+        );
+        var conf = try init(t.allocator, confpath);
+        defer conf.deinit();
+        try t.expect(conf.data.slock == null);
+        try conf.verifySlockPin("");
+        try conf.verifySlockPin("1111");
+    }
+
+    const newpinconf = try tmp.join(&.{"newconf.json"});
+    {
+        var conf = Config{
+            .arena = conf_arena,
+            .confpath = newpinconf,
+            .data = .{
+                .slock = null,
+                .syschannel = .master, // unused
+                .syscronscript = undefined, // unused
+                .sysrunscript = undefined, // unused
+            },
+            .static = undefined, // unused
+        };
+        defer conf.deinit();
+
+        // any pin should workd because slock is null
+        try conf.verifySlockPin("");
+        try conf.verifySlockPin("any");
+        // set a new pin code
+        try conf.setSlockPin("1357");
+        try conf.verifySlockPin("1357");
+        try t.expectError(error.IncorrectSlockPin, conf.verifySlockPin(""));
+        try t.expectError(error.IncorrectSlockPin, conf.verifySlockPin("any"));
+    }
+    // load conf from file and check
+    {
+        var conf = try init(t.allocator, newpinconf);
+        defer conf.deinit();
+        try t.expect(conf.data.slock != null);
+        try conf.setSlockPin("1357");
+        try conf.verifySlockPin("1357");
+        try t.expectError(error.IncorrectSlockPin, conf.verifySlockPin("any2"));
+    }
 }

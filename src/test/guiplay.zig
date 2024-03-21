@@ -29,6 +29,7 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
 
 const Flags = struct {
     ngui_path: ?[:0]const u8 = null,
+    slock: bool = false, // gui screen lock
 
     fn deinit(self: @This(), allocator: std.mem.Allocator) void {
         if (self.ngui_path) |p| allocator.free(p);
@@ -57,6 +58,8 @@ fn parseArgs(gpa: std.mem.Allocator) !Flags {
         }
         if (std.mem.eql(u8, a, "-ngui")) {
             lastarg = .ngui_path;
+        } else if (std.mem.eql(u8, a, "-slock")) {
+            flags.slock = true;
         } else {
             fatal("unknown arg name {s}", .{a});
         }
@@ -74,9 +77,18 @@ fn parseArgs(gpa: std.mem.Allocator) !Flags {
 }
 
 /// global vars for comm read/write threads
-var mu: std.Thread.Mutex = .{};
-var nodename: types.BufTrimString(std.os.HOST_NAME_MAX) = .{};
-var settings_sent = false;
+var state: struct {
+    mu: std.Thread.Mutex = .{},
+    nodename: types.BufTrimString(std.os.HOST_NAME_MAX) = .{},
+    slock_pincode: ?[]const u8 = null, // disabled when null
+    settings_sent: bool = false,
+
+    fn deinit(self: @This(), gpa: std.mem.Allocator) void {
+        if (self.slock_pincode) |s| {
+            gpa.free(s);
+        }
+    }
+} = .{};
 
 fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
     comm.write(gpa, w, .ping) catch |err| logger.err("comm.write ping: {any}", .{err});
@@ -144,10 +156,39 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
                 comm.write(gpa, w, .{ .lightning_ctrlconn = conn }) catch |err| logger.err("{!}", .{err});
             },
             .set_nodename => |s| {
-                mu.lock();
-                defer mu.unlock();
-                nodename.set(s);
-                settings_sent = false;
+                state.mu.lock();
+                defer state.mu.unlock();
+                state.nodename.set(s);
+                state.settings_sent = false;
+            },
+            .unlock_screen => |pin| {
+                logger.info("unlock pincode: {s}", .{pin});
+                time.sleep(1 * time.ns_per_s);
+                state.mu.lock();
+                defer state.mu.unlock();
+                if (state.slock_pincode == null or std.mem.eql(u8, pin, state.slock_pincode.?)) {
+                    const res: comm.Message.ScreenUnlockResult = .{
+                        .ok = true,
+                        .err = null,
+                    };
+                    comm.write(gpa, w, .{ .screen_unlock_result = res }) catch |err| logger.err("{!}", .{err});
+                } else {
+                    comm.write(gpa, w, .{ .screen_unlock_result = .{
+                        .ok = false,
+                        .err = "incorrect pin code",
+                    } }) catch |err| logger.err("{!}", .{err});
+                }
+            },
+            .slock_set_pincode => |newpin| {
+                logger.info("slock_set_pincode: {?s}", .{newpin});
+                time.sleep(1 * time.ns_per_s);
+                state.mu.lock();
+                defer state.mu.unlock();
+                if (state.slock_pincode) |s| {
+                    gpa.free(s);
+                }
+                state.slock_pincode = if (newpin) |pin| gpa.dupe(u8, pin) catch unreachable else null;
+                state.settings_sent = false;
             },
             else => {},
         }
@@ -169,18 +210,19 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
         }
         sectimer.reset();
 
-        mu.lock();
-        defer mu.unlock();
+        state.mu.lock();
+        defer state.mu.unlock();
 
-        if (!settings_sent) {
-            settings_sent = true;
+        if (!state.settings_sent) {
+            state.settings_sent = true;
             const sett: comm.Message.Settings = .{
-                .hostname = nodename.val(),
+                .slock_enabled = state.slock_pincode != null,
+                .hostname = state.nodename.val(),
                 .sysupdates = .{ .channel = .edge },
             };
             comm.write(gpa, w, .{ .settings = sett }) catch |err| {
                 logger.err("{}", .{err});
-                settings_sent = false;
+                state.settings_sent = false;
             };
         }
 
@@ -306,9 +348,17 @@ pub fn main() !void {
     const flags = try parseArgs(gpa);
     defer flags.deinit(gpa);
 
-    nodename.set("guiplayhost");
+    state.slock_pincode = if (flags.slock) try gpa.dupe(u8, "0000") else null;
+    state.nodename.set("guiplayhost");
+    defer state.deinit(gpa);
 
-    ngui_proc = std.ChildProcess.init(&.{flags.ngui_path.?}, gpa);
+    var a = std.ArrayList([]const u8).init(gpa);
+    defer a.deinit();
+    try a.append(flags.ngui_path.?);
+    if (flags.slock) {
+        try a.append("-slock");
+    }
+    ngui_proc = std.ChildProcess.init(a.items, gpa);
     ngui_proc.stdin_behavior = .Pipe;
     ngui_proc.stdout_behavior = .Pipe;
     ngui_proc.stderr_behavior = .Inherit;

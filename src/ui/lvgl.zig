@@ -427,6 +427,11 @@ pub const WidgetMethods = struct {
         lv_obj_align(self.lvobj, @intFromEnum(a), xoffset, yoffset);
     }
 
+    /// similar to `posAlign` but the alignment is in relation to another object `rel`.
+    pub fn posAlignTo(self: anytype, rel: anytype, a: PosAlign, xoffset: Coord, yoffset: Coord) void {
+        lv_obj_align_to(self.lvobj, rel.lvobj, @intFromEnum(a), xoffset, yoffset);
+    }
+
     /// sets flex layout growth property; same meaning as in CSS flex.
     pub fn flexGrow(self: anytype, val: u8) void {
         lv_obj_set_flex_grow(self.lvobj, val);
@@ -495,7 +500,7 @@ pub const Screen = struct {
 
     /// makes a screen active.
     pub fn load(scr: Screen) void {
-        lv_disp_load_scr(scr.obj);
+        lv_disp_load_scr(scr.lvobj);
     }
 };
 
@@ -710,10 +715,11 @@ pub const Label = struct {
     };
 
     /// the text value is copied into a heap-allocated alloc.
-    pub fn new(parent: anytype, text: [*:0]const u8, opt: Opt) !Label {
+    pub fn new(parent: anytype, text: ?[*:0]const u8, opt: Opt) !Label {
         var lv_label = lv_label_create(parent.lvobj) orelse return error.OutOfMemory;
-        //lv_label_set_text_static(lb, text); // static doesn't work with .dot
-        lv_label_set_text(lv_label, text);
+        if (text) |s| {
+            lv_label_set_text(lv_label, s);
+        }
         //lv_obj_set_height(lb, sizeContent); // default
         if (opt.long_mode) |m| {
             lv_label_set_long_mode(lv_label, @intFromEnum(m));
@@ -736,8 +742,8 @@ pub const Label = struct {
 
     /// sets label text to a new value.
     /// previous value is dealloc'ed.
-    pub fn setText(self: Label, text: [*:0]const u8) void {
-        lv_label_set_text(self.lvobj, text);
+    pub fn setText(self: Label, text: [:0]const u8) void {
+        lv_label_set_text(self.lvobj, text.ptr);
     }
 
     /// sets label text without heap alloc but assumes text outlives the label obj.
@@ -952,6 +958,38 @@ pub const QrCode = struct {
         if (res != c.LV_RES_OK) {
             return error.QrCodeSetData;
         }
+    }
+};
+
+pub const Keyboard = struct {
+    lvobj: *LvObj,
+
+    pub usingnamespace BaseObjMethods;
+    pub usingnamespace WidgetMethods;
+
+    const Mode = enum(c.lv_keyboard_mode_t) {
+        lower = c.LV_KEYBOARD_MODE_TEXT_LOWER,
+        upper = c.LV_KEYBOARD_MODE_TEXT_UPPER,
+        special = c.LV_KEYBOARD_MODE_SPECIAL,
+        number = c.LV_KEYBOARD_MODE_NUMBER,
+        user1 = c.LV_KEYBOARD_MODE_USER_1,
+        user2 = c.LV_KEYBOARD_MODE_USER_2,
+        user3 = c.LV_KEYBOARD_MODE_USER_3,
+        user4 = c.LV_KEYBOARD_MODE_USER_4,
+    };
+
+    pub fn new(parent: anytype, mode: Mode) !Keyboard {
+        const kb = lv_keyboard_create(parent.lvobj) orelse return error.OutOfMemory;
+        lv_keyboard_set_mode(kb, @intFromEnum(mode));
+        return .{ .lvobj = kb };
+    }
+
+    pub fn attach(self: Keyboard, ta: TextArea) void {
+        lv_keyboard_set_textarea(self.lvobj, ta.lvobj);
+    }
+
+    pub fn setMode(self: Keyboard, m: Mode) void {
+        lv_keyboard_set_mode(self.lvobj, m);
     }
 };
 
@@ -1191,6 +1229,7 @@ extern fn lv_obj_clear_flag(obj: *LvObj, v: c.lv_obj_flag_t) void;
 extern fn lv_obj_has_flag(obj: *LvObj, v: c.lv_obj_flag_t) bool;
 
 extern fn lv_obj_align(obj: *LvObj, a: c.lv_align_t, x: c.lv_coord_t, y: c.lv_coord_t) void;
+extern fn lv_obj_align_to(obj: *LvObj, rel: *LvObj, a: c.lv_align_t, x: c.lv_coord_t, y: c.lv_coord_t) void;
 extern fn lv_obj_set_height(obj: *LvObj, h: c.lv_coord_t) void;
 extern fn lv_obj_set_width(obj: *LvObj, w: c.lv_coord_t) void;
 extern fn lv_obj_set_size(obj: *LvObj, w: c.lv_coord_t, h: c.lv_coord_t) void;
@@ -1243,3 +1282,7 @@ extern fn lv_win_get_content(win: *LvObj) *LvObj;
 
 extern fn lv_qrcode_create(parent: *LvObj, size: c.lv_coord_t, dark: Color, light: Color) ?*LvObj;
 extern fn lv_qrcode_update(qrcode: *LvObj, data: *const anyopaque, data_len: u32) c.lv_res_t;
+
+extern fn lv_keyboard_create(parent: *LvObj) ?*LvObj;
+extern fn lv_keyboard_set_textarea(kb: *LvObj, ta: *LvObj) void;
+extern fn lv_keyboard_set_mode(kb: *LvObj, mode: c.lv_keyboard_mode_t) void;

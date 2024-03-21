@@ -8,6 +8,7 @@ const Address = std.net.Address;
 const nif = @import("nif");
 
 const comm = @import("comm.zig");
+const Config = @import("nd/Config.zig");
 const Daemon = @import("nd/Daemon.zig");
 const screen = @import("ui/screen.zig");
 
@@ -158,9 +159,19 @@ pub fn main() !void {
     // of its previous state.
     screen.backlight(.on) catch |err| logger.err("backlight: {any}", .{err});
 
+    // load config file to figure out whether to start ngui in screenlocked mode.
+    const conf = try Config.init(gpa, args.conf.?);
+    defer conf.deinit();
+
     // start ngui, unless -nogui mode
     const gui_path = args.gui.?; // guaranteed to be non-null
-    var ngui = std.ChildProcess.init(&.{gui_path}, gpa);
+    var ngui_args = std.ArrayList([]const u8).init(gpa);
+    defer ngui_args.deinit();
+    try ngui_args.append(gui_path);
+    if (conf.data.slock != null) {
+        try ngui_args.append("-slock");
+    }
+    var ngui = std.ChildProcess.init(ngui_args.items, gpa);
     ngui.stdin_behavior = .Pipe;
     ngui.stdout_behavior = .Pipe;
     ngui.stderr_behavior = .Inherit;
@@ -200,7 +211,7 @@ pub fn main() !void {
 
     var nd = try Daemon.init(.{
         .allocator = gpa,
-        .confpath = args.conf.?,
+        .conf = conf,
         .uir = uireader,
         .uiw = uiwriter,
         .wpa = args.wpa.?,

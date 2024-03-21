@@ -8,6 +8,7 @@ const types = @import("types.zig");
 const ui = @import("ui/ui.zig");
 const lvgl = @import("ui/lvgl.zig");
 const screen = @import("ui/screen.zig");
+const screenlock = @import("ui/screenlock.zig");
 const symbol = @import("ui/symbol.zig");
 
 const logger = std.log.scoped(.ngui);
@@ -26,12 +27,17 @@ var gpa: std.mem.Allocator = undefined;
 var ui_mutex: std.Thread.Mutex = .{};
 
 /// current state of the GUI.
-/// guarded by ui_mutex since some nm_xxx funcs branch based off of the state.
+/// guarded by `ui_mutex` since some `nm_xxx` funcs branch based off of the state.
 var state: enum {
     active, // normal operational mode
     standby, // idling
     alert, // draw user attention; never go standby
 } = .active;
+
+var slock_status: enum {
+    enabled,
+    disabled,
+} = undefined; // set in main after parsing cmd line flags
 
 /// last report received from comm.
 /// deinit'ed at program exit.
@@ -224,68 +230,58 @@ fn commThreadLoopCycle() !void {
     const msg = try comm.pipeRead(); // blocking
     ui_mutex.lock(); // guards the state and all UI calls below
     defer ui_mutex.unlock();
-    switch (state) {
-        .standby => switch (msg.value) {
-            .ping => {
-                defer msg.deinit();
-                try comm.pipeWrite(comm.Message.pong);
-            },
-            .network_report,
-            .onchain_report,
-            .lightning_report,
-            .lightning_error,
-            => last_report.replace(msg),
-            .lightning_genseed_result,
-            .lightning_ctrlconn,
-            // TODO: merge standby vs active switch branches
-            => {
-                ui.lightning.updateTabPanel(msg.value) catch |err| logger.err("lightning.updateTabPanel: {any}", .{err});
-                msg.deinit();
-            },
-            .settings => |sett| {
-                ui.settings.update(sett) catch |err| logger.err("settings.update: {any}", .{err});
-                msg.deinit();
-            },
-            else => {
-                logger.debug("ignoring {s}: in standby", .{@tagName(msg.value)});
-                msg.deinit();
-            },
+    switch (msg.value) {
+        .ping => {
+            defer msg.deinit();
+            try comm.pipeWrite(comm.Message.pong);
         },
-        .active, .alert => switch (msg.value) {
-            .ping => {
-                defer msg.deinit();
-                try comm.pipeWrite(comm.Message.pong);
-            },
-            .poweroff_progress => |rep| {
-                ui.poweroff.updateStatus(rep) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
-                msg.deinit();
-            },
-            .network_report => |rep| {
+        .poweroff_progress => |rep| {
+            ui.poweroff.updateStatus(rep) catch |err| logger.err("poweroff.updateStatus: {any}", .{err});
+            msg.deinit();
+        },
+        .network_report => |rep| {
+            if (state != .standby) {
                 updateNetworkStatus(rep) catch |err| logger.err("updateNetworkStatus: {any}", .{err});
-                last_report.replace(msg);
-            },
-            .onchain_report => |rep| {
+            }
+            last_report.replace(msg);
+        },
+        .onchain_report => |rep| {
+            if (state != .standby) {
                 ui.bitcoin.updateTabPanel(rep) catch |err| logger.err("bitcoin.updateTabPanel: {any}", .{err});
-                last_report.replace(msg);
-            },
-            .lightning_report, .lightning_error => {
+            }
+            last_report.replace(msg);
+        },
+        .lightning_report, .lightning_error => {
+            if (state != .standby) {
                 ui.lightning.updateTabPanel(msg.value) catch |err| logger.err("lightning.updateTabPanel: {any}", .{err});
-                last_report.replace(msg);
-            },
-            .lightning_genseed_result,
-            .lightning_ctrlconn,
-            => {
-                ui.lightning.updateTabPanel(msg.value) catch |err| logger.err("lightning.updateTabPanel: {any}", .{err});
-                msg.deinit();
-            },
-            .settings => |sett| {
-                ui.settings.update(sett) catch |err| logger.err("settings.update: {any}", .{err});
-                msg.deinit();
-            },
-            else => {
-                logger.warn("unhandled msg tag {s}", .{@tagName(msg.value)});
-                msg.deinit();
-            },
+            }
+            last_report.replace(msg);
+        },
+        .lightning_genseed_result,
+        .lightning_ctrlconn,
+        => {
+            ui.lightning.updateTabPanel(msg.value) catch |err| logger.err("lightning.updateTabPanel: {any}", .{err});
+            msg.deinit();
+        },
+        .settings => |sett| {
+            ui.settings.update(sett) catch |err| logger.err("settings.update: {any}", .{err});
+            slock_status = if (sett.slock_enabled) .enabled else .disabled;
+            msg.deinit();
+        },
+        .screen_unlock_result => |unlock| {
+            if (unlock.ok) {
+                ui.screenlock.unlockSuccess();
+            } else {
+                var errmsg: [:0]const u8 = "invalid pin code";
+                if (unlock.err) |s| {
+                    errmsg = gpa.dupeZ(u8, s) catch errmsg;
+                }
+                ui.screenlock.unlockFailure(errmsg);
+            }
+        },
+        else => {
+            logger.warn("unhandled msg tag {s}", .{@tagName(msg.value)});
+            msg.deinit();
         },
     }
 }
@@ -306,6 +302,9 @@ fn uiThreadLoop() void {
                 // go into a screen sleep mode due to no user activity
                 wakeup.reset();
                 comm.pipeWrite(comm.Message.standby) catch |err| logger.err("standby: {any}", .{err});
+                if (slock_status == .enabled) {
+                    screenlock.activate();
+                }
                 screen.sleep(&ui_mutex, &wakeup); // blocking
 
                 // wake up due to touch screen activity or wakeup event is set
@@ -346,7 +345,25 @@ fn uiThreadLoop() void {
     logger.info("exiting UI thread loop", .{});
 }
 
-fn parseArgs(alloc: std.mem.Allocator) !void {
+/// prints usage help text to stderr.
+fn usage(prog: []const u8) !void {
+    try stderr.print(
+        \\usage: {s} [-v] [-slock]
+        \\
+        \\ngui is nakamochi GUI interface. it communicates with nd, nakamochi daemon,
+        \\via stdio and is typically launched by the daemon as a child process.
+        \\
+        \\-slock makes the interface start up in a screenlocked mode.
+    , .{prog});
+}
+
+const CmdFlags = struct {
+    slock: bool, // whether to start the UI in screen locked mode
+};
+
+fn parseArgs(alloc: std.mem.Allocator) !CmdFlags {
+    var flags = CmdFlags{ .slock = false };
+
     var args = try std.process.ArgIterator.initWithAllocator(alloc);
     defer args.deinit();
     const prog = args.next() orelse return error.NoProgName;
@@ -358,22 +375,14 @@ fn parseArgs(alloc: std.mem.Allocator) !void {
         } else if (std.mem.eql(u8, a, "-v")) {
             try stderr.print("{any}\n", .{buildopts.semver});
             std.process.exit(0);
+        } else if (std.mem.eql(u8, a, "-slock")) {
+            flags.slock = true;
         } else {
             logger.err("unknown arg name {s}", .{a});
             return error.UnknownArgName;
         }
     }
-}
-
-/// prints usage help text to stderr.
-fn usage(prog: []const u8) !void {
-    try stderr.print(
-        \\usage: {s} [-v]
-        \\
-        \\ngui is nakamochi GUI interface. it communicates with nd, nakamochi daemon,
-        \\via stdio and is typically launched by the daemon as a child process.
-        \\
-    , .{prog});
+    return flags;
 }
 
 /// handles sig TERM and INT: makes the program exit.
@@ -395,8 +404,9 @@ pub fn main() anyerror!void {
         logger.err("memory leaks detected", .{});
     };
     gpa = gpa_state.allocator();
-    try parseArgs(gpa);
+    const flags = try parseArgs(gpa);
     logger.info("ndg version {any}", .{buildopts.semver});
+    slock_status = if (flags.slock) .enabled else .disabled;
 
     // ensure timer is available on this platform before doing anything else;
     // the UI is unusable otherwise.
@@ -406,7 +416,7 @@ pub fn main() anyerror!void {
     comm.initPipe(gpa, .{ .r = std.io.getStdIn(), .w = std.io.getStdOut() });
 
     // initalizes display, input driver and finally creates the user interface.
-    ui.init(gpa) catch |err| {
+    ui.init(.{ .allocator = gpa, .slock = flags.slock }) catch |err| {
         logger.err("ui.init: {any}", .{err});
         return err;
     };
@@ -422,6 +432,7 @@ pub fn main() anyerror!void {
         const th = try std.Thread.spawn(.{}, uiThreadLoop, .{});
         th.detach();
     }
+
     {
         // start comms with daemon in a seaparate thread.
         const th = try std.Thread.spawn(.{}, commThreadLoop, .{});

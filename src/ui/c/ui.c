@@ -10,6 +10,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+static lv_style_t style_title;
+static lv_style_t style_text_muted;
+static lv_style_t style_btn_red;
+static const lv_font_t *font_large;
+static lv_obj_t *virt_keyboard;
+static lv_obj_t *tabview; /* main tabs content parent; lv_tabview_create */
+
 /**
  * initiates system shutdown leading to poweroff.
  */
@@ -36,6 +43,11 @@ int nm_create_lightning_panel(lv_obj_t *parent);
 lv_obj_t *nm_create_settings_nodename(lv_obj_t *parent);
 
 /**
+ * creates screenlock card of the settings panel.
+ */
+lv_obj_t *nm_create_settings_screenlock(lv_obj_t *parent);
+
+/**
  * creates the sysupdates section of the settings panel.
  */
 lv_obj_t *nm_create_settings_sysupdates(lv_obj_t *parent);
@@ -55,13 +67,6 @@ int nm_wifi_start_connect(const char *ssid, const char *password);
  * callback fn when "power off" button is pressed.
  */
 void nm_poweroff_btn_callback(lv_event_t *e);
-
-static lv_style_t style_title;
-static lv_style_t style_text_muted;
-static lv_style_t style_btn_red;
-static const lv_font_t *font_large;
-static lv_obj_t *virt_keyboard;
-static lv_obj_t *tabview; /* main tabs content parent; lv_tabview_create */
 
 /**
  * returns user-managed data previously set on an object with nm_obj_set_userdata.
@@ -254,6 +259,7 @@ static int create_settings_panel(lv_obj_t *parent)
      ********************/
     // ported to zig;
     lv_obj_t *nodename_panel = nm_create_settings_nodename(parent);
+    lv_obj_t *screenlock_panel = nm_create_settings_screenlock(parent);
     lv_obj_t *sysupdates_panel = nm_create_settings_sysupdates(parent);
 
     /********************
@@ -263,14 +269,16 @@ static int create_settings_panel(lv_obj_t *parent)
     static lv_coord_t parent_grid_rows[] = {/**/
         LV_GRID_CONTENT,                    /* wifi panel */
         LV_GRID_CONTENT,                    /* nodename panel */
+        LV_GRID_CONTENT,                    /* screenlock panel */
         LV_GRID_CONTENT,                    /* power panel */
         LV_GRID_CONTENT,                    /* sysupdates panel */
         LV_GRID_TEMPLATE_LAST};
     lv_obj_set_grid_dsc_array(parent, parent_grid_cols, parent_grid_rows);
     lv_obj_set_grid_cell(wifi_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 0, 1);
     lv_obj_set_grid_cell(nodename_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 1, 1);
-    lv_obj_set_grid_cell(power_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 2, 1);
-    lv_obj_set_grid_cell(sysupdates_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 3, 1);
+    lv_obj_set_grid_cell(screenlock_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 2, 1);
+    lv_obj_set_grid_cell(power_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 3, 1);
+    lv_obj_set_grid_cell(sysupdates_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 4, 1);
 
     static lv_coord_t wifi_grid_cols[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
     static lv_coord_t wifi_grid_rows[] = {/**/
@@ -325,7 +333,7 @@ static void tab_changed_event_cb(lv_event_t *e)
     }
 }
 
-extern int nm_ui_init(lv_disp_t *disp)
+extern void nm_ui_init_theme(lv_disp_t *disp)
 {
     /* default theme is static */
     lv_theme_t *theme = lv_theme_default_init(disp, /**/
@@ -344,18 +352,21 @@ extern int nm_ui_init(lv_disp_t *disp)
 
     lv_style_init(&style_btn_red);
     lv_style_set_bg_color(&style_btn_red, lv_palette_main(LV_PALETTE_RED));
+}
 
+extern int nm_ui_init_main_tabview(lv_obj_t *scr)
+{
     /* global virtual keyboard */
-    virt_keyboard = lv_keyboard_create(lv_scr_act());
+    virt_keyboard = lv_keyboard_create(scr);
     if (virt_keyboard == NULL) {
-        /* TODO: or continue without keyboard? */
         return -1;
     }
     lv_obj_set_style_max_height(virt_keyboard, NM_DISP_HOR * 2 / 3, 0);
     lv_obj_add_flag(virt_keyboard, LV_OBJ_FLAG_HIDDEN);
 
+    /* the paren of all main tabs */
     const lv_coord_t tabh = 60;
-    tabview = lv_tabview_create(lv_scr_act(), LV_DIR_TOP, tabh);
+    tabview = lv_tabview_create(scr, LV_DIR_TOP, tabh);
     if (tabview == NULL) {
         return -1;
     }

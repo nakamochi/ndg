@@ -16,9 +16,13 @@ const logger = std.log.scoped(.ui);
 /// label color mark start to make "label:" part of a "label: value"
 /// in a different color.
 const cmark = "#bbbbbb ";
-/// buttons text
+/// button labels and other text
 const textSwitch = "SWITCH";
 const textChange = "CHANGE";
+const textDisable = "DISABLE";
+const textSlockBtnEnable = "SET PIN CODE";
+const textSlockDisabled = "screenlock is disabled\nset a pin code to activate";
+const textSlockEnabled = "screenlock is enabled\nit activates once in standby mode";
 
 // global allocator set in init.
 // must be set before any call into pub funcs in this module.
@@ -32,6 +36,33 @@ var tab: struct {
         textarea: lvgl.TextArea,
         changebtn: lvgl.TextButton,
     },
+    screenlock: struct {
+        card: lvgl.Card,
+        textlabel: lvgl.Label,
+        enbtn: lvgl.TextButton,
+        disbtn: lvgl.TextButton,
+
+        setpin_win: lvgl.Window,
+        setpin_label: lvgl.Label,
+        setpin_input: lvgl.TextArea,
+
+        fn beginSetPin(self: *@This()) !void {
+            self.setpin_win = try lvgl.Window.newTop(60, "SET SCREENLOCK PIN CODE");
+            const wincont = self.setpin_win.content().flex(.column, .{ .cross = .center, .track = .center });
+            self.setpin_input = try lvgl.TextArea.new(wincont, .{ .password_mode = true });
+            self.setpin_input.posAlign(.top_mid, 0, 20);
+            _ = self.setpin_input.on(.ready, nm_screenlock_pincode_input, null);
+            self.setpin_label = try lvgl.Label.new(wincont, null, .{});
+            self.setpin_label.posAlignTo(self.setpin_input, .out_bottom_mid, 0, 10);
+            self.setpin_label.setTextStatic("please enter a new pin code");
+            const kb = try lvgl.Keyboard.new(self.setpin_win, .number);
+            kb.attach(self.setpin_input);
+        }
+
+        fn endSetPin(self: @This()) void {
+            self.setpin_win.destroy();
+        }
+    },
     sysupdates: struct {
         card: lvgl.Card,
         chansel: lvgl.Dropdown,
@@ -42,8 +73,12 @@ var tab: struct {
 
 /// holds last values received from the daemon.
 var state: struct {
+    // node name
     nodename_change_inprogress: bool = false,
     curr_nodename: types.BufTrimString(std.os.HOST_NAME_MAX) = .{},
+    // screenlock
+    slock_pin_input1: ?[]const u8 = null, // verified against a second time input
+    // sysupdates channel
     curr_sysupdates_chan: ?comm.Message.SysupdatesChan = null,
 } = .{};
 
@@ -92,6 +127,38 @@ pub fn initNodenamePanel(cont: lvgl.Container) !lvgl.Card {
     _ = tab.nodename.changebtn.on(.click, nm_nodename_change_btn_click, null);
 
     return tab.nodename.card;
+}
+
+/// creates a settings panel for setting screenlock pin code.
+pub fn initScreenlockPanel(cont: lvgl.Container) !lvgl.Card {
+    tab.screenlock.card = try lvgl.Card.new(cont, symbol.EyeClose ++ " SCREENLOCK", .{ .spinner = true });
+
+    const row = try lvgl.FlexLayout.new(tab.screenlock.card, .row, .{});
+    row.setWidth(lvgl.sizePercent(100));
+    row.setHeightToContent();
+
+    // left column
+    const left = try lvgl.FlexLayout.new(row, .column, .{ .height = .content });
+    left.flexGrow(1);
+    left.setPad(10, .row, .{});
+    tab.screenlock.textlabel = try lvgl.Label.new(left, null, .{});
+    tab.screenlock.textlabel.setTextStatic("no info available yet");
+
+    // right column
+    const right = try lvgl.FlexLayout.new(row, .column, .{ .height = .content });
+    right.flexGrow(1);
+    right.setPad(10, .row, .{});
+    tab.screenlock.enbtn = try lvgl.TextButton.new(right, textSlockBtnEnable);
+    tab.screenlock.enbtn.setWidth(lvgl.sizePercent(100));
+    tab.screenlock.enbtn.hide();
+    _ = tab.screenlock.enbtn.on(.click, nm_screenlock_enbtn_click, null);
+    tab.screenlock.disbtn = try lvgl.TextButton.new(right, textDisable);
+    tab.screenlock.disbtn.setWidth(lvgl.sizePercent(100));
+    tab.screenlock.disbtn.addStyle(lvgl.nm_style_btn_red(), .{});
+    tab.screenlock.disbtn.hide();
+    _ = tab.screenlock.disbtn.on(.click, nm_screenlock_disbtn_click, null);
+
+    return tab.screenlock.card;
 }
 
 /// creates a settings panel UI to control system updates channel.
@@ -171,6 +238,20 @@ pub fn update(sett: comm.Message.Settings) !void {
             tab.nodename.changebtn.disable();
         }
     }
+
+    // screenlock
+    tab.screenlock.card.spin(.off);
+    if (sett.slock_enabled) {
+        tab.screenlock.textlabel.setTextStatic(textSlockEnabled);
+        tab.screenlock.enbtn.hide();
+        tab.screenlock.disbtn.enable();
+        tab.screenlock.disbtn.show();
+    } else {
+        tab.screenlock.textlabel.setTextStatic(textSlockDisabled);
+        tab.screenlock.enbtn.enable();
+        tab.screenlock.enbtn.show();
+        tab.screenlock.disbtn.hide();
+    }
 }
 
 export fn nm_nodename_textarea_input(e: *lvgl.LvEvent) void {
@@ -200,6 +281,60 @@ export fn nm_nodename_change_btn_click(_: *lvgl.LvEvent) void {
     tab.nodename.changebtn.disable();
     tab.nodename.textarea.disable();
     tab.nodename.card.spin(.on);
+}
+
+export fn nm_screenlock_enbtn_click(_: *lvgl.LvEvent) void {
+    tab.screenlock.beginSetPin() catch |err| {
+        logger.err("screenlock.beginSetPin: {!}", .{err});
+    };
+}
+
+export fn nm_screenlock_pincode_input(_: *lvgl.LvEvent) void {
+    // first time input; prompt user for second input to verify
+    if (state.slock_pin_input1 == null) {
+        state.slock_pin_input1 = allocator.dupe(u8, tab.screenlock.setpin_input.text()) catch |err| {
+            logger.err("unable to continue setting screenlock pin code: {!}", .{err});
+            tab.screenlock.endSetPin();
+            return;
+        };
+        tab.screenlock.setpin_label.setTextStatic("please enter the pin once more to verify");
+        tab.screenlock.setpin_input.setText("");
+        return;
+    }
+
+    // ensure first and second time inputs match
+    const pininput2 = tab.screenlock.setpin_input.text();
+    if (!std.mem.eql(u8, pininput2, state.slock_pin_input1.?)) {
+        allocator.free(state.slock_pin_input1.?);
+        state.slock_pin_input1 = null;
+        tab.screenlock.setpin_label.setTextStatic("pin codes mismatch, please try again");
+        tab.screenlock.setpin_input.setText("");
+        return;
+    }
+
+    // send the pin code to nd and return to the main settings screen
+    defer {
+        tab.screenlock.endSetPin();
+        allocator.free(state.slock_pin_input1.?);
+        state.slock_pin_input1 = null;
+    }
+    tab.screenlock.card.spin(.on);
+    tab.screenlock.enbtn.disable();
+    comm.pipeWrite(.{ .slock_set_pincode = pininput2 }) catch |err| {
+        logger.err("comm slock_set_pincode: {!}", .{err});
+        tab.screenlock.card.spin(.off);
+        tab.screenlock.enbtn.enable();
+    };
+}
+
+export fn nm_screenlock_disbtn_click(_: *lvgl.LvEvent) void {
+    tab.screenlock.card.spin(.on);
+    tab.screenlock.disbtn.disable();
+    comm.pipeWrite(.{ .slock_set_pincode = null }) catch |err| {
+        logger.err("comm slock_set_pincode(null): {!}", .{err});
+        tab.screenlock.card.spin(.off);
+        tab.screenlock.disbtn.enable();
+    };
 }
 
 export fn nm_sysupdates_chansel_changed(_: *lvgl.LvEvent) void {

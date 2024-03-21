@@ -89,7 +89,13 @@ pub const MessageTag = enum(u16) {
     set_nodename = 0x15,
     // nd -> ngui: all ndg settings
     settings = 0x0d,
-    // next: 0x16
+    // ngui -> nd: verify pincode
+    unlock_screen = 0x17,
+    // nd -> ngui: result of try_unlock
+    screen_unlock_result = 0x18,
+    // ngui -> nd: set or disable screenlock pin code
+    slock_set_pincode = 0x19,
+    // next: 0x1a
 };
 
 /// daemon and gui exchange messages of this type.
@@ -115,6 +121,9 @@ pub const Message = union(MessageTag) {
     switch_sysupdates: SysupdatesChan,
     set_nodename: []const u8,
     settings: Settings,
+    unlock_screen: []const u8, // pincode
+    screen_unlock_result: ScreenUnlockResult,
+    slock_set_pincode: ?[]const u8,
 
     pub const WifiConnect = struct {
         ssid: []const u8,
@@ -250,10 +259,16 @@ pub const Message = union(MessageTag) {
     };
 
     pub const Settings = struct {
+        slock_enabled: bool,
         hostname: []const u8, // see .set_nodename
         sysupdates: struct {
             channel: SysupdatesChan,
         },
+    };
+
+    pub const ScreenUnlockResult = struct {
+        ok: bool,
+        err: ?[]const u8 = null, // error message when !ok
     };
 };
 
@@ -347,6 +362,9 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
         .switch_sysupdates => try json.stringify(msg.switch_sysupdates, .{}, data.writer()),
         .set_nodename => try json.stringify(msg.set_nodename, .{}, data.writer()),
         .settings => try json.stringify(msg.settings, .{}, data.writer()),
+        .unlock_screen => try json.stringify(msg.unlock_screen, .{}, data.writer()),
+        .screen_unlock_result => try json.stringify(msg.screen_unlock_result, .{}, data.writer()),
+        .slock_set_pincode => try json.stringify(msg.slock_set_pincode, .{}, data.writer()),
     }
     if (data.items.len > std.math.maxInt(u64)) {
         return Error.CommWriteTooLarge;
