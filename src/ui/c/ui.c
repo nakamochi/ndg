@@ -102,6 +102,11 @@ extern lv_style_t *nm_style_title()
     return &style_title;
 }
 
+extern const lv_font_t *nm_font_large()
+{
+    return font_large;
+}
+
 /**
  * a hack to prevent tabview from switching to the next tab
  * on a scroll event, for example coming from a top layer window.
@@ -361,6 +366,7 @@ extern int nm_ui_init_main_tabview(lv_obj_t *scr)
     if (virt_keyboard == NULL) {
         return -1;
     }
+    lv_obj_set_style_text_font(virt_keyboard, font_large, LV_PART_ITEMS);
     lv_obj_set_style_max_height(virt_keyboard, NM_DISP_HOR * 2 / 3, 0);
     lv_obj_add_flag(virt_keyboard, LV_OBJ_FLAG_HIDDEN);
 

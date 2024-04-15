@@ -213,6 +213,9 @@ pub const LvStyle = opaque {
     };
 };
 
+/// represents lv_font_t in C.
+pub const LvFont = opaque {};
+
 /// a simplified color type compatible with LVGL which defines lv_color_t
 /// as a union containing an bit-fields struct unsupported in zig cImport.
 pub const Color = u16; // originally c.lv_color_t; TODO: comptime switch for u32
@@ -981,6 +984,8 @@ pub const Keyboard = struct {
     pub fn new(parent: anytype, mode: Mode) !Keyboard {
         const kb = lv_keyboard_create(parent.lvobj) orelse return error.OutOfMemory;
         lv_keyboard_set_mode(kb, @intFromEnum(mode));
+        const sel = LvStyle.Selector{ .part = .item };
+        lv_obj_set_style_text_font(kb, nm_font_large(), sel.value());
         return .{ .lvobj = kb };
     }
 
@@ -1126,6 +1131,8 @@ pub const PosAlign = enum(c.lv_align_t) {
 pub extern fn nm_style_btn_red() *LvStyle; // TODO: make it private
 /// returns a title style with a larger font.
 pub extern fn nm_style_title() *LvStyle; // TODO: make it private
+/// returns default font of large size.
+pub extern fn nm_font_large() *const LvFont; // TODO: make it private
 
 // the "native" lv_obj_set/get user_data are static inline, so make our own funcs.
 extern "c" fn nm_obj_userdata(obj: *LvObj) ?*anyopaque;
@@ -1198,6 +1205,7 @@ extern fn lv_obj_remove_style(obj: *LvObj, style: ?*LvStyle, sel: c.lv_style_sel
 extern fn lv_obj_remove_style_all(obj: *LvObj) void;
 extern fn lv_obj_set_style_bg_color(obj: *LvObj, val: Color, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_set_style_text_color(obj: *LvObj, val: Color, sel: c.lv_style_selector_t) void;
+extern fn lv_obj_set_style_text_font(obj: *LvObj, font: *const LvFont, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_set_style_pad_left(obj: *LvObj, val: c.lv_coord_t, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_set_style_pad_right(obj: *LvObj, val: c.lv_coord_t, sel: c.lv_style_selector_t) void;
 extern fn lv_obj_set_style_pad_top(obj: *LvObj, val: c.lv_coord_t, sel: c.lv_style_selector_t) void;
