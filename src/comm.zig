@@ -56,15 +56,15 @@ pub const MessageTag = enum(u16) {
     ping = 0x01,
     pong = 0x02,
     poweroff = 0x03,
-    wifi_connect = 0x04,
-    network_report = 0x05,
-    get_network_report = 0x06,
+    // nd -> ngui: reports poweroff progress
+    poweroff_progress = 0x09,
     // ngui -> nd: screen timeout, no user activity; no reply
     standby = 0x07,
     // ngui -> nd: resume screen due to user touch; no reply
     wakeup = 0x08,
-    // nd -> ngui: reports poweroff progress
-    poweroff_progress = 0x09,
+    wifi_connect = 0x04,
+    network_report = 0x05,
+    get_network_report = 0x06,
     // nd -> ngui: bitcoin core daemon status report
     onchain_report = 0x0a,
     // nd -> ngui: lnd status and stats report
@@ -103,12 +103,12 @@ pub const Message = union(MessageTag) {
     ping: void,
     pong: void,
     poweroff: void,
+    poweroff_progress: PoweroffProgress,
     standby: void,
     wakeup: void,
     wifi_connect: WifiConnect,
     network_report: NetworkReport,
     get_network_report: GetNetworkReport,
-    poweroff_progress: PoweroffProgress,
     onchain_report: OnchainReport,
     lightning_report: LightningReport,
     lightning_error: LightningError,
@@ -294,8 +294,8 @@ pub const ParsedMessage = struct {
 /// callers must deallocate resources with ParsedMessage.deinit when done.
 pub fn read(allocator: mem.Allocator, reader: anytype) !ParsedMessage {
     // alternative is @intToEnum(reader.ReadIntLittle(u16)) but it may panic.
-    const tag = try reader.readEnum(MessageTag, .Little);
-    const len = try reader.readIntLittle(u64);
+    const tag = try reader.readEnum(MessageTag, .little);
+    const len = try reader.readInt(u64, .little);
     if (len == 0) {
         return switch (tag) {
             .lightning_get_ctrlconn => .{ .value = .lightning_get_ctrlconn },
@@ -318,7 +318,7 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !ParsedMessage {
         .wakeup,
         => unreachable, // handled above
         inline else => |t| {
-            var bytes = try allocator.alloc(u8, len);
+            const bytes = try allocator.alloc(u8, len);
             defer allocator.free(bytes);
             try reader.readNoEof(bytes);
 
@@ -370,8 +370,8 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
         return Error.CommWriteTooLarge;
     }
 
-    try writer.writeIntLittle(u16, @intFromEnum(msg));
-    try writer.writeIntLittle(u64, data.items.len);
+    try writer.writeInt(u16, @intFromEnum(msg), .little);
+    try writer.writeInt(u64, data.items.len, .little);
     try writer.writeAll(data.items);
 }
 
@@ -401,8 +401,8 @@ test "read" {
 
     var buf = std.ArrayList(u8).init(t.allocator);
     defer buf.deinit();
-    try buf.writer().writeIntLittle(u16, @intFromEnum(msg));
-    try buf.writer().writeIntLittle(u64, data.items.len);
+    try buf.writer().writeInt(u16, @intFromEnum(msg), .little);
+    try buf.writer().writeInt(u64, data.items.len, .little);
     try buf.writer().writeAll(data.items);
 
     var bs = std.io.fixedBufferStream(buf.items);
@@ -424,8 +424,8 @@ test "write" {
     const payload = "{\"ssid\":\"wlan\",\"password\":\"secret\"}";
     var js = std.ArrayList(u8).init(t.allocator);
     defer js.deinit();
-    try js.writer().writeIntLittle(u16, @intFromEnum(msg));
-    try js.writer().writeIntLittle(u64, payload.len);
+    try js.writer().writeInt(u16, @intFromEnum(msg), .little);
+    try js.writer().writeInt(u64, payload.len, .little);
     try js.appendSlice(payload);
 
     try t.expectEqualStrings(js.items, buf.items);
@@ -442,8 +442,8 @@ test "write enum" {
     const payload = "\"edge\"";
     var js = std.ArrayList(u8).init(t.allocator);
     defer js.deinit();
-    try js.writer().writeIntLittle(u16, @intFromEnum(msg));
-    try js.writer().writeIntLittle(u64, payload.len);
+    try js.writer().writeInt(u16, @intFromEnum(msg), .little);
+    try js.writer().writeInt(u64, payload.len, .little);
     try js.appendSlice(payload);
 
     try t.expectEqualStrings(js.items, buf.items);

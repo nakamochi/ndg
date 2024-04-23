@@ -5,8 +5,8 @@ const types = @import("../types.zig");
 
 /// caller owns memory; must dealloc using `allocator`.
 pub fn hostname(allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [std.os.HOST_NAME_MAX]u8 = undefined;
-    const name = try std.os.gethostname(&buf);
+    var buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
+    const name = try std.posix.gethostname(&buf);
     return allocator.dupe(u8, name);
 }
 
@@ -40,8 +40,8 @@ pub fn setHostname(allocator: std.mem.Allocator, name: []const u8) !void {
     const newname = sanitized.items;
 
     // need not continue if current name matches the new one.
-    var buf: [std.os.HOST_NAME_MAX]u8 = undefined;
-    const currname = try std.os.gethostname(&buf);
+    var buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
+    const currname = try std.posix.gethostname(&buf);
     if (std.mem.eql(u8, currname, newname)) {
         return;
     }

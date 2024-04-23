@@ -37,7 +37,7 @@ pub fn initGlobal() void {
 fn initGlobalFn() void {
     global_gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     global_gpa = global_gpa_state.allocator();
-    var pipe = types.IoPipe.create() catch |err| {
+    const pipe = types.IoPipe.create() catch |err| {
         std.debug.panic("IoPipe.create: {any}", .{err});
     };
     comm.initPipe(global_gpa, pipe);
@@ -118,7 +118,7 @@ pub const TestChildProcess = struct {
     argv: []const []const u8,
 
     pub fn init(argv: []const []const u8, allocator: std.mem.Allocator) TestChildProcess {
-        var adup = allocator.alloc([]u8, argv.len) catch unreachable;
+        const adup = allocator.alloc([]u8, argv.len) catch unreachable;
         for (argv, adup) |v, *dup| {
             dup.* = allocator.dupe(u8, v) catch unreachable;
         }
@@ -242,7 +242,7 @@ pub fn expectDeepEqual(expected: anytype, actual: @TypeOf(expected)) !void {
                 .Slice => {
                     switch (@typeInfo(p.child)) {
                         .Pointer, .Struct, .Optional, .Union => {
-                            var err: ?anyerror = blk: {
+                            const err: ?anyerror = blk: {
                                 if (expected.len != actual.len) {
                                     std.debug.print("expected.len = {d}, actual.len = {d}\n", .{ expected.len, actual.len });
                                     break :blk error.ExpectDeepEqual;
@@ -331,6 +331,7 @@ test {
     _ = @import("ngui.zig");
     _ = @import("lightning.zig");
     _ = @import("sys.zig");
+    _ = @import("xfmt.zig");
 
     std.testing.refAllDecls(@This());
 }

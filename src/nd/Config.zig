@@ -145,7 +145,7 @@ fn inferStaticData(allocator: std.mem.Allocator) !StaticData {
 }
 
 fn inferLndTorHostname(allocator: std.mem.Allocator) ![]const u8 {
-    var raw = try std.fs.cwd().readFileAlloc(allocator, TOR_DATA_DIR ++ "/lnd/hostname", 1024);
+    const raw = try std.fs.cwd().readFileAlloc(allocator, TOR_DATA_DIR ++ "/lnd/hostname", 1024);
     const hostname = std.mem.trim(u8, raw, &std.ascii.whitespace);
     logger.info("inferred lnd tor hostname: [{s}]", .{hostname});
     return hostname;
@@ -156,7 +156,7 @@ fn inferBitcoindRpcPass(allocator: std.mem.Allocator) ![]const u8 {
     // the password was placed on a separate comment line, preceding another comment
     // line containing "rpcauth.py".
     // TODO: get rid of the hack; do something more robust
-    var conf = try std.fs.cwd().readFileAlloc(allocator, BITCOIND_CONFIG_PATH, 1024 * 1024);
+    const conf = try std.fs.cwd().readFileAlloc(allocator, BITCOIND_CONFIG_PATH, 1024 * 1024);
     var it = std.mem.tokenizeScalar(u8, conf, '\n');
     var next_is_pass = false;
     while (it.next()) |line| {
@@ -346,7 +346,7 @@ fn genSysupdatesCronScript(self: Config) !void {
 ///
 /// the caller must serialize this function calls.
 fn runSysupdates(allocator: std.mem.Allocator, scriptpath: []const u8) !void {
-    const res = try std.ChildProcess.exec(.{ .allocator = allocator, .argv = &.{scriptpath} });
+    const res = try std.ChildProcess.run(.{ .allocator = allocator, .argv = &.{scriptpath} });
     defer {
         allocator.free(res.stdout);
         allocator.free(res.stderr);
@@ -383,7 +383,7 @@ pub fn lndConnectWaitMacaroonFile(self: Config, allocator: std.mem.Allocator, ty
     defer allocator.free(macaroon);
 
     const base64enc = std.base64.url_safe_no_pad.Encoder;
-    var buf = try allocator.alloc(u8, base64enc.calcSize(macaroon.len));
+    const buf = try allocator.alloc(u8, base64enc.calcSize(macaroon.len));
     defer allocator.free(buf);
     const macaroon_b64 = base64enc.encode(buf, macaroon);
     const port: u16 = switch (typ) {
@@ -599,7 +599,7 @@ test "ndconfig: switch sysupdates with .run=true" {
     const tt = @import("../test.zig");
 
     // no arena deinit here: expecting Config to auto-deinit.
-    var conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+    const conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
     conf_arena.* = std.heap.ArenaAllocator.init(std.testing.allocator);
     var tmp = try tt.TempDir.create();
     defer tmp.cleanup();
@@ -644,7 +644,7 @@ test "ndconfig: genLndConfig" {
     const tt = @import("../test.zig");
 
     // Config auto-deinits the arena.
-    var conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+    const conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
     conf_arena.* = std.heap.ArenaAllocator.init(std.testing.allocator);
     var tmp = try tt.TempDir.create();
     defer tmp.cleanup();
@@ -695,7 +695,7 @@ test "ndconfig: mutate LndConf" {
     const tt = @import("../test.zig");
 
     // Config auto-deinits the arena.
-    var conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+    const conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
     conf_arena.* = std.heap.ArenaAllocator.init(t.allocator);
     var tmp = try tt.TempDir.create();
     defer tmp.cleanup();
@@ -737,7 +737,7 @@ test "ndconfig: screen lock" {
     const tt = @import("../test.zig");
 
     // Config auto-deinits the arena.
-    var conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+    const conf_arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
     conf_arena.* = std.heap.ArenaAllocator.init(t.allocator);
     var tmp = try tt.TempDir.create();
     defer tmp.cleanup();

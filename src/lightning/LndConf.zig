@@ -36,7 +36,7 @@ pub const Section = struct {
         const vdup = try self.alloc.dupe(u8, value);
         errdefer self.alloc.free(vdup);
 
-        var res = try self.props.getOrPut(try self.alloc.dupe(u8, key));
+        const res = try self.props.getOrPut(try self.alloc.dupe(u8, key));
         if (!res.found_existing) {
             res.value_ptr.* = .{ .str = vdup };
             return;
@@ -180,7 +180,7 @@ pub fn appendDefaultSection(self: *LndConf) !*Section {
 /// the section name ascii is converted to lower case.
 pub fn appendSection(self: *LndConf, name: []const u8) !*Section {
     const alloc = self.arena.allocator();
-    var low_name = try std.ascii.allocLowerString(alloc, name);
+    const low_name = try std.ascii.allocLowerString(alloc, name);
     try self.sections.append(.{
         .name = low_name,
         .props = std.StringArrayHashMap(PropValue).init(alloc),

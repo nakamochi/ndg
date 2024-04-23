@@ -75,7 +75,7 @@ var tab: struct {
 var state: struct {
     // node name
     nodename_change_inprogress: bool = false,
-    curr_nodename: types.BufTrimString(std.os.HOST_NAME_MAX) = .{},
+    curr_nodename: types.BufTrimString(std.posix.HOST_NAME_MAX) = .{},
     // screenlock
     slock_pin_input1: ?[]const u8 = null, // verified against a second time input
     // sysupdates channel
@@ -111,7 +111,7 @@ pub fn initNodenamePanel(cont: lvgl.Container) !lvgl.Card {
     right.setPad(0, .column, .{});
 
     tab.nodename.textarea = try lvgl.TextArea.new(right, .{
-        .maxlen = std.os.HOST_NAME_MAX,
+        .maxlen = std.posix.HOST_NAME_MAX,
         .oneline = true,
     });
     tab.nodename.textarea.setWidth(lvgl.sizePercent(100));

@@ -719,7 +719,7 @@ pub const Label = struct {
 
     /// the text value is copied into a heap-allocated alloc.
     pub fn new(parent: anytype, text: ?[*:0]const u8, opt: Opt) !Label {
-        var lv_label = lv_label_create(parent.lvobj) orelse return error.OutOfMemory;
+        const lv_label = lv_label_create(parent.lvobj) orelse return error.OutOfMemory;
         if (text) |s| {
             lv_label_set_text(lv_label, s);
         }
@@ -757,7 +757,7 @@ pub const Label = struct {
     /// formats a new label text and passes it on to `setText`.
     /// the buffer can be dropped once the function returns.
     pub fn setTextFmt(self: Label, buf: []u8, comptime format: []const u8, args: anytype) !void {
-        var s = try std.fmt.bufPrintZ(buf, format, args);
+        const s = try std.fmt.bufPrintZ(buf, format, args);
         self.setText(s);
     }
 

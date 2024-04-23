@@ -46,9 +46,9 @@ pub usingnamespace switch (buildopts.driver) {
         }
     },
     .fbev => struct {
-        extern "c" fn nm_open_evdev_nonblock() std.os.fd_t;
-        extern "c" fn nm_close_evdev(fd: std.os.fd_t) void;
-        extern "c" fn nm_consume_input_events(fd: std.os.fd_t) bool;
+        extern "c" fn nm_open_evdev_nonblock() std.posix.fd_t;
+        extern "c" fn nm_close_evdev(fd: std.posix.fd_t) void;
+        extern "c" fn nm_consume_input_events(fd: std.posix.fd_t) bool;
 
         pub fn InputWatcher() !EvdevWatcher {
             const fd = nm_open_evdev_nonblock();
@@ -59,7 +59,7 @@ pub usingnamespace switch (buildopts.driver) {
         }
 
         pub const EvdevWatcher = struct {
-            evdev_fd: std.os.fd_t,
+            evdev_fd: std.posix.fd_t,
 
             pub fn consume(self: @This()) bool {
                 return nm_consume_input_events(self.evdev_fd);

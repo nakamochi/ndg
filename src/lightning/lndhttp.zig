@@ -143,22 +143,29 @@ pub const Client = struct {
     pub fn call(self: *Client, comptime apimethod: ApiMethod, args: MethodArgs(apimethod)) !Result(apimethod) {
         const formatted = try self.formatreq(apimethod, args);
         defer formatted.deinit();
+
+        var headersbuf: [8 * 1024]u8 = undefined;
         const reqinfo = formatted.value;
-        const opt = std.http.Client.Options{ .handle_redirects = false }; // no redirects in REST API
-        var req = try self.httpClient.request(reqinfo.httpmethod, reqinfo.url, reqinfo.headers, opt);
+        const opt = std.http.Client.RequestOptions{
+            .redirect_behavior = .not_allowed, // no redirects in REST API
+            .headers = reqinfo.stdheaders,
+            .privileged_headers = reqinfo.xheaders,
+            .server_header_buffer = &headersbuf,
+        };
+        var req = try self.httpClient.open(reqinfo.httpmethod, reqinfo.url, opt);
         defer req.deinit();
         if (reqinfo.payload) |p| {
             req.transfer_encoding = .{ .content_length = p.len };
         }
 
-        try req.start();
+        try req.send();
         if (reqinfo.payload) |p| {
-            req.writer().writeAll(p) catch return Error.LndPayloadWriteFail;
+            req.writeAll(p) catch return Error.LndPayloadWriteFail;
             try req.finish();
         }
         try req.wait();
         if (req.response.status.class() != .success) {
-            // a structured error reporting in lnd is in a less than desirable state.
+            // a structured error reporting in lnd is unclear:
             // https://github.com/lightningnetwork/lnd/issues/5586
             // TODO: return a more detailed error when the upstream improves.
             return Error.LndHttpBadStatusCode;
@@ -181,8 +188,9 @@ pub const Client = struct {
     const HttpReqInfo = struct {
         httpmethod: std.http.Method,
         url: std.Uri,
-        headers: std.http.Headers,
-        payload: ?[]const u8,
+        stdheaders: std.http.Client.Request.Headers = .{}, // overridable standard headers
+        xheaders: []const std.http.Header = &.{}, // any extra headers
+        payload: ?[]const u8 = null,
     };
 
     fn formatreq(self: Client, comptime apimethod: ApiMethod, args: MethodArgs(apimethod)) !types.Deinitable(HttpReqInfo) {
@@ -194,12 +202,10 @@ pub const Client = struct {
             .genseed, .walletstatus => |m| .{
                 .httpmethod = .GET,
                 .url = try std.Uri.parse(try std.fmt.allocPrint(arena, "{s}/{s}", .{ self.apibase, m.apipath() })),
-                .headers = std.http.Headers{ .allocator = arena },
-                .payload = null,
             },
             .initwallet => |m| blk: {
                 const payload = p: {
-                    var params: struct {
+                    const params: struct {
                         wallet_password: []const u8, // base64
                         cipher_seed_mnemonic: []const []const u8,
                         aezeed_passphrase: ?[]const u8 = null, // base64
@@ -215,13 +221,12 @@ pub const Client = struct {
                 break :blk .{
                     .httpmethod = .POST,
                     .url = try std.Uri.parse(try std.fmt.allocPrint(arena, "{s}/{s}", .{ self.apibase, m.apipath() })),
-                    .headers = std.http.Headers{ .allocator = arena },
                     .payload = payload,
                 };
             },
             .unlockwallet => |m| blk: {
                 const payload = p: {
-                    var params: struct {
+                    const params: struct {
                         wallet_password: []const u8, // base64
                     } = .{
                         .wallet_password = try base64EncodeAlloc(arena, args.unlock_password),
@@ -233,20 +238,19 @@ pub const Client = struct {
                 break :blk .{
                     .httpmethod = .POST,
                     .url = try std.Uri.parse(try std.fmt.allocPrint(arena, "{s}/{s}", .{ self.apibase, m.apipath() })),
-                    .headers = std.http.Headers{ .allocator = arena },
                     .payload = payload,
                 };
             },
             .feereport, .getinfo, .getnetworkinfo, .pendingchannels, .walletbalance => |m| .{
                 .httpmethod = .GET,
                 .url = try std.Uri.parse(try std.fmt.allocPrint(arena, "{s}/{s}", .{ self.apibase, m.apipath() })),
-                .headers = blk: {
+                .xheaders = blk: {
                     if (self.macaroon.readonly == null) {
                         return Error.LndHttpMissingMacaroon;
                     }
-                    var h = std.http.Headers{ .allocator = arena };
-                    try h.append(authHeaderName, self.macaroon.readonly.?);
-                    break :blk h;
+                    var h = std.ArrayList(std.http.Header).init(arena);
+                    try h.append(.{ .name = authHeaderName, .value = self.macaroon.readonly.? });
+                    break :blk try h.toOwnedSlice();
                 },
                 .payload = null,
             },
@@ -270,13 +274,13 @@ pub const Client = struct {
                     }
                     break :blk try std.Uri.parse(buf.items); // uri point to the original buf
                 },
-                .headers = blk: {
+                .xheaders = blk: {
                     if (self.macaroon.readonly == null) {
                         return Error.LndHttpMissingMacaroon;
                     }
-                    var h = std.http.Headers{ .allocator = arena };
-                    try h.append(authHeaderName, self.macaroon.readonly.?);
-                    break :blk h;
+                    var h = std.ArrayList(std.http.Header).init(arena);
+                    try h.append(.{ .name = authHeaderName, .value = self.macaroon.readonly.? });
+                    break :blk try h.toOwnedSlice();
                 },
                 .payload = null,
             },
@@ -299,7 +303,7 @@ pub const Client = struct {
     }
 
     fn base64EncodeAlloc(gpa: std.mem.Allocator, v: []const u8) ![]const u8 {
-        var buf = try gpa.alloc(u8, base64enc.calcSize(v.len));
+        const buf = try gpa.alloc(u8, base64enc.calcSize(v.len));
         return base64enc.encode(buf, v); // always returns a slice of buf.len
     }
 };
