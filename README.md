@@ -61,17 +61,17 @@ to make a new image and switch the CI to use it, first modify the
 [ci-containerfile](tools/ci-containerfile) and produce the image locally:
 
     podman build --rm -t ndg-ci -f ./tools/ci-containerfile \
-      --build-arg ZIGURL=https://ziglang.org/download/0.11.0/zig-linux-x86_64-0.11.0.tar.xz
+      --build-arg ZIGURL=https://ziglang.org/download/0.12.0/zig-linux-x86_64-0.12.0.tar.xz
 
 then tag it with the target URL, for example:
 
-    podman tag localhost/ndg-ci git.qcode.ch/nakamochi/ci-zig0.11.0:v2
+    podman tag localhost/ndg-ci git.qcode.ch/nakamochi/ci-zig0.12.0:v1
 
 generate an [access token](https://git.qcode.ch/user/settings/applications),
 login to the container registry and push the image to remote:
 
     podman login git.qcode.ch
-    podman push git.qcode.ch/nakamochi/ci-zig0.11.0:v2
+    podman push git.qcode.ch/nakamochi/ci-zig0.12.0:v1
 
 the image will be available at
 https://git.qcode.ch/nakamochi/-/packages/

@@ -1,7 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const net = std.net;
-const os = std.os;
+const posix = std.posix;
 
 pub const wpa = @import("wpa.zig");
 
@@ -12,11 +12,11 @@ const ifaddrs = extern struct {
     next: ?*ifaddrs,
     name: [*:0]const u8,
     flags: c_uint, // see IFF_xxx SIOCGIFFLAGS in netdevice(7)
-    addr: ?*std.os.sockaddr,
-    netmask: ?*std.os.sockaddr,
+    addr: ?*std.posix.sockaddr,
+    netmask: ?*std.posix.sockaddr,
     ifu: extern union {
-        broad: *os.sockaddr, // flags & IFF_BROADCAST
-        dst: *os.sockaddr, // flags & IFF_POINTOPOINT
+        broad: *posix.sockaddr, // flags & IFF_BROADCAST
+        dst: *posix.sockaddr, // flags & IFF_POINTOPOINT
     },
     data: ?*anyopaque,
 };
@@ -37,8 +37,8 @@ pub fn pubAddresses(allocator: mem.Allocator, ifname: ?[]const u8) ![]net.Addres
     var list = std.ArrayList(net.Address).init(allocator);
     var it: ?*ifaddrs = res;
     while (it) |ifa| : (it = ifa.next) {
-        const sa: *os.sockaddr = ifa.addr orelse continue;
-        if (sa.family != os.AF.INET and sa.family != os.AF.INET6) {
+        const sa: *posix.sockaddr = ifa.addr orelse continue;
+        if (sa.family != posix.AF.INET and sa.family != posix.AF.INET6) {
             // not an IP address
             continue;
         }
@@ -47,7 +47,7 @@ pub fn pubAddresses(allocator: mem.Allocator, ifname: ?[]const u8) ![]net.Addres
             continue;
         }
         const ipaddr = net.Address.initPosix(@alignCast(sa)); // initPosix makes a copy
-        if (ipaddr.any.family == os.AF.INET6 and ipaddr.in6.sa.scope_id > 0) {
+        if (ipaddr.any.family == posix.AF.INET6 and ipaddr.in6.sa.scope_id > 0) {
             // want only global, with 0 scope
             // non-zero scopes make sense for link-local addr only.
             continue;

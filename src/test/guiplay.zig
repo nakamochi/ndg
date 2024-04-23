@@ -1,6 +1,6 @@
 const std = @import("std");
 const time = std.time;
-const os = std.os;
+const posix = std.posix;
 
 const comm = @import("comm");
 const types = @import("../types.zig");
@@ -12,9 +12,9 @@ var ngui_proc: std.ChildProcess = undefined;
 var sigquit: std.Thread.ResetEvent = .{};
 
 fn sighandler(sig: c_int) callconv(.C) void {
-    logger.info("received signal {} (TERM={} INT={})", .{ sig, os.SIG.TERM, os.SIG.INT });
+    logger.info("received signal {} (TERM={} INT={})", .{ sig, posix.SIG.TERM, posix.SIG.INT });
     switch (sig) {
-        os.SIG.INT, os.SIG.TERM => sigquit.set(),
+        posix.SIG.INT, posix.SIG.TERM => sigquit.set(),
         else => {},
     }
 }
@@ -79,7 +79,7 @@ fn parseArgs(gpa: std.mem.Allocator) !Flags {
 /// global vars for comm read/write threads
 var state: struct {
     mu: std.Thread.Mutex = .{},
-    nodename: types.BufTrimString(std.os.HOST_NAME_MAX) = .{},
+    nodename: types.BufTrimString(std.posix.HOST_NAME_MAX) = .{},
     slock_pincode: ?[]const u8 = null, // disabled when null
     settings_sent: bool = false,
 
@@ -114,7 +114,7 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
             },
             .poweroff => {
                 logger.info("sending poweroff status1", .{});
-                var s1: comm.Message.PoweroffProgress = .{ .services = &.{
+                const s1: comm.Message.PoweroffProgress = .{ .services = &.{
                     .{ .name = "lnd", .stopped = false, .err = null },
                     .{ .name = "bitcoind", .stopped = false, .err = null },
                 } };
@@ -122,7 +122,7 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
 
                 time.sleep(2 * time.ns_per_s);
                 logger.info("sending poweroff status2", .{});
-                var s2: comm.Message.PoweroffProgress = .{ .services = &.{
+                const s2: comm.Message.PoweroffProgress = .{ .services = &.{
                     .{ .name = "lnd", .stopped = true, .err = null },
                     .{ .name = "bitcoind", .stopped = false, .err = null },
                 } };
@@ -130,7 +130,7 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
 
                 time.sleep(3 * time.ns_per_s);
                 logger.info("sending poweroff status3", .{});
-                var s3: comm.Message.PoweroffProgress = .{ .services = &.{
+                const s3: comm.Message.PoweroffProgress = .{ .services = &.{
                     .{ .name = "lnd", .stopped = true, .err = null },
                     .{ .name = "bitcoind", .stopped = true, .err = null },
                 } };
@@ -149,7 +149,7 @@ fn commReadThread(gpa: std.mem.Allocator, r: anytype, w: anytype) void {
                 time.sleep(3 * time.ns_per_s);
             },
             .lightning_get_ctrlconn => {
-                var conn: comm.Message.LightningCtrlConn = &.{
+                const conn: comm.Message.LightningCtrlConn = &.{
                     .{ .url = "lndconnect://adfkjhadwaepoijsadflkjtrpoijawokjafulkjsadfkjhgjfdskjszd.onion:10009?macaroon=Adasjsadkfljhfjhasdpiuhfiuhawfffoihgpoiadsfjharpoiuhfdsgpoihafdsgpoiheafoiuhasdfhisdufhiuhfewiuhfiuhrfl6prrx", .typ = .lnd_rpc, .perm = .admin },
                     .{ .url = "lndconnect://adfkjhadwaepoijsadflkjtrpoijawokjafulkjsadfkjhgjfdskjszd.onion:10010?macaroon=Adasjsadkfljhfjhasdpiuhfiuhawfffoihgpoiadsfjharpoiuhfdsgpoihafdsgpoiheafoiuhasdfhisdufhiuhfewiuhfiuhrfl6prrx", .typ = .lnd_http, .perm = .admin },
                 };
@@ -374,13 +374,13 @@ pub fn main() !void {
     const th2 = try std.Thread.spawn(.{}, commWriteThread, .{ gpa, uiwriter });
     th2.detach();
 
-    const sa = os.Sigaction{
+    const sa = posix.Sigaction{
         .handler = .{ .handler = sighandler },
-        .mask = os.empty_sigset,
+        .mask = posix.empty_sigset,
         .flags = 0,
     };
-    try os.sigaction(os.SIG.INT, &sa, null);
-    try os.sigaction(os.SIG.TERM, &sa, null);
+    try posix.sigaction(posix.SIG.INT, &sa, null);
+    try posix.sigaction(posix.SIG.TERM, &sa, null);
     sigquit.wait();
 
     logger.info("killing ngui", .{});

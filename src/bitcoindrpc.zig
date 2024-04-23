@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const ArenaAllocator = std.heap.ArenaAllocator;
-const Atomic = std.atomic.Atomic;
+const Atomic = std.atomic.Value;
 const base64enc = std.base64.standard.Encoder;
 
 const types = @import("types.zig");
@@ -13,7 +13,7 @@ pub const Client = struct {
     addr: []const u8 = "127.0.0.1",
     port: u16 = 8332,
 
-    // each request gets a new ID with a value of reqid.fetchAdd(1, .Monotonic)
+    // each request gets a new ID with a value of reqid.fetchAdd(1, .monotonic)
     reqid: Atomic(u64) = Atomic(u64).init(1),
 
     pub const Method = enum {
@@ -153,7 +153,7 @@ pub const Client = struct {
     /// callers own returned value.
     fn formatreq(self: *Client, comptime m: Method, args: MethodArgs(m)) ![]const u8 {
         const req = RpcRequest(m){
-            .id = self.reqid.fetchAdd(1, .Monotonic),
+            .id = self.reqid.fetchAdd(1, .monotonic),
             .method = @tagName(m),
             .params = args,
         };
@@ -183,7 +183,7 @@ pub const Client = struct {
         defer file.close();
         const cookie = try file.readToEndAlloc(self.allocator, 1024);
         defer self.allocator.free(cookie);
-        var auth = try self.allocator.alloc(u8, base64enc.calcSize(cookie.len));
+        const auth = try self.allocator.alloc(u8, base64enc.calcSize(cookie.len));
         return base64enc.encode(auth, cookie);
     }
 

@@ -41,12 +41,11 @@ fn formatUnix(sec: u64, comptime fmt: []const u8, opts: std.fmt.FormatOptions, w
 }
 
 fn formatMetricI(value: i64, comptime fmt: []const u8, opts: std.fmt.FormatOptions, w: anytype) !void {
-    const uval: u64 = std.math.absCast(value);
+    const uval: u64 = @abs(value);
     const base: u64 = 1000;
     if (uval < base) {
         return std.fmt.formatIntValue(value, fmt, opts, w);
     }
-
     if (value < 0) {
         try w.writeByte('-');
     }
@@ -64,8 +63,60 @@ fn formatMetricU(value: u64, comptime fmt: []const u8, opts: std.fmt.FormatOptio
     const mags_si = " kMGTPEZY";
     const log2 = std.math.log2(value);
     const m = @min(log2 / comptime std.math.log2(base), mags_si.len - 1);
-    const newval = lossyCast(f64, value) / std.math.pow(f64, lossyCast(f64, base), lossyCast(f64, m));
     const suffix = mags_si[m];
-    try std.fmt.formatFloatDecimal(newval, opts, w);
+    const newval: f64 = lossyCast(f64, value) / std.math.pow(f64, lossyCast(f64, base), lossyCast(f64, m));
+    try std.fmt.formatType(newval, "d", opts, w, 0);
     try w.writeByte(suffix);
+}
+
+test "unix" {
+    const t = std.testing;
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    try std.fmt.format(fbs.writer(), "{}", .{unix(1136239445)});
+    try t.expectEqualStrings("2006-01-02 22:04:05 UTC", fbs.getWritten());
+}
+
+test "imetric" {
+    const t = std.testing;
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+
+    const table: []const struct { val: i64, str: []const u8 } = &.{
+        .{ .val = 0, .str = "0" },
+        .{ .val = -13, .str = "-13" },
+        .{ .val = 1000, .str = "1k" },
+        .{ .val = -1234, .str = "-1.234k" },
+        .{ .val = 12340, .str = "12.34k" },
+        .{ .val = -123400, .str = "-123.4k" },
+        .{ .val = 1234000, .str = "1.234M" },
+        .{ .val = -1234000000, .str = "-1.234G" },
+    };
+    for (table) |item| {
+        fbs.reset();
+        try std.fmt.format(fbs.writer(), "{}", .{imetric(item.val)});
+        try t.expectEqualStrings(item.str, fbs.getWritten());
+    }
+}
+
+test "umetric" {
+    const t = std.testing;
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+
+    const table: []const struct { val: u64, str: []const u8 } = &.{
+        .{ .val = 0, .str = "0" },
+        .{ .val = 13, .str = "13" },
+        .{ .val = 1000, .str = "1k" },
+        .{ .val = 1234, .str = "1.234k" },
+        .{ .val = 12340, .str = "12.34k" },
+        .{ .val = 123400, .str = "123.4k" },
+        .{ .val = 1234000, .str = "1.234M" },
+        .{ .val = 1234000000, .str = "1.234G" },
+    };
+    for (table) |item| {
+        fbs.reset();
+        try std.fmt.format(fbs.writer(), "{}", .{umetric(item.val)});
+        try t.expectEqualStrings(item.str, fbs.getWritten());
+    }
 }

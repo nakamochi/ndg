@@ -86,7 +86,7 @@ pub fn sendReport(gpa: mem.Allocator, wpa_ctrl: *types.WpaControl, w: anytype) !
     };
 
     // fetch available wifi networks from scan results using WPA ctrl
-    var wifi_networks: ?types.StringList = if (queryWifiScanResults(arena, wpa_ctrl)) |v| v else |err| blk: {
+    const wifi_networks: ?types.StringList = if (queryWifiScanResults(arena, wpa_ctrl)) |v| v else |err| blk: {
         logger.err("queryWifiScanResults: {any}", .{err});
         break :blk null;
     };

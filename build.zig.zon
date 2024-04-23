@@ -1,0 +1,17 @@
+.{
+    .name = "ndg",
+    .version = "0.8.1",
+    .dependencies = .{
+        .nif = .{
+            .path = "lib/nif",
+        },
+        .ini = .{
+            .path = "lib/ini",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

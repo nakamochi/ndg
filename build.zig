@@ -11,18 +11,16 @@ pub fn build(b: *std.Build) void {
     const inver = b.option([]const u8, "version", "semantic version of the build; must match git tag when available");
 
     const buildopts = b.addOptions();
+    const buildopts_mod = buildopts.createModule();
     buildopts.addOption(DriverTarget, "driver", drv);
     const semver_step = VersionStep.create(b, buildopts, inver);
     buildopts.step.dependOn(semver_step);
 
     // network interface (nif) standalone library used by the daemon and tests.
-    const libnif_dep = b.anonymousDependency("lib/nif", @import("lib/nif/build.zig"), .{
-        .target = target,
-        .optimize = optimize,
-    });
+    const libnif_dep = b.lazyDependency("nif", .{ .target = target, .optimize = optimize }) orelse return;
     const libnif = libnif_dep.artifact("nif");
     // ini file format parser
-    const libini = b.addModule("ini", .{ .source_file = .{ .path = "lib/ini/src/ini.zig" } });
+    const libini_dep = b.lazyDependency("ini", .{ .target = target, .optimize = optimize }) orelse return;
 
     const common_cflags = .{
         "-Wall",
@@ -35,16 +33,16 @@ pub fn build(b: *std.Build) void {
     // gui build
     const ngui = b.addExecutable(.{
         .name = "ngui",
-        .root_source_file = .{ .path = "src/ngui.zig" },
+        .root_source_file = b.path("src/ngui.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .strip = strip,
     });
     ngui.pie = true;
-    ngui.strip = strip;
-    ngui.addOptions("build_options", buildopts);
-    ngui.addIncludePath(.{ .path = "lib" });
-    ngui.addIncludePath(.{ .path = "src/ui/c" });
+    ngui.root_module.addImport("build_options", buildopts_mod);
+    ngui.addIncludePath(b.path("lib"));
+    ngui.addIncludePath(b.path("src/ui/c"));
 
     const lvgl_flags = .{
         "-std=c11",
@@ -52,7 +50,7 @@ pub fn build(b: *std.Build) void {
         "-Wformat",
         "-Wformat-security",
     } ++ common_cflags;
-    ngui.addCSourceFiles(lvgl_generic_src, &lvgl_flags);
+    ngui.addCSourceFiles(.{ .files = lvgl_generic_src, .flags = &lvgl_flags });
 
     const ngui_cflags = .{
         "-std=c11",
@@ -60,39 +58,46 @@ pub fn build(b: *std.Build) void {
         "-Wunused-parameter",
         "-Werror",
     } ++ common_cflags;
-    ngui.addCSourceFiles(&.{
-        "src/ui/c/ui.c",
-        "src/ui/c/lv_font_courierprimecode_14.c",
-        "src/ui/c/lv_font_courierprimecode_16.c",
-        "src/ui/c/lv_font_courierprimecode_24.c",
-    }, &ngui_cflags);
+    ngui.addCSourceFiles(.{
+        .root = b.path("src/ui/c"),
+        .files = &.{
+            "ui.c",
+            "lv_font_courierprimecode_14.c",
+            "lv_font_courierprimecode_16.c",
+            "lv_font_courierprimecode_24.c",
+        },
+        .flags = &ngui_cflags,
+    });
 
-    ngui.defineCMacroRaw(b.fmt("NM_DISP_HOR={}", .{disp_horiz}));
-    ngui.defineCMacroRaw(b.fmt("NM_DISP_VER={}", .{disp_vert}));
-    ngui.defineCMacro("LV_CONF_INCLUDE_SIMPLE", null);
+    ngui.root_module.addCMacro("NM_DISP_HOR", b.fmt("{d}", .{disp_horiz}));
+    ngui.root_module.addCMacro("NM_DISP_VER", b.fmt("{d}", .{disp_vert}));
+    ngui.defineCMacro("LV_CONF_INCLUDE_SIMPLE", "1");
     ngui.defineCMacro("LV_LOG_LEVEL", lvgl_loglevel.text());
     ngui.defineCMacro("LV_TICK_CUSTOM", "1");
     ngui.defineCMacro("LV_TICK_CUSTOM_INCLUDE", "\"lv_custom_tick.h\"");
     ngui.defineCMacro("LV_TICK_CUSTOM_SYS_TIME_EXPR", "(nm_get_curr_tick())");
     switch (drv) {
         .sdl2 => {
-            ngui.addCSourceFiles(lvgl_sdl2_src, &lvgl_flags);
-            ngui.addCSourceFile(.{ .file = .{ .path = "src/ui/c/drv_sdl2.c" }, .flags = &ngui_cflags });
+            ngui.addCSourceFiles(.{ .files = lvgl_sdl2_src, .flags = &lvgl_flags });
+            ngui.addCSourceFile(.{ .file = b.path("src/ui/c/drv_sdl2.c"), .flags = &ngui_cflags });
             ngui.defineCMacro("USE_SDL", "1");
             ngui.linkSystemLibrary("SDL2");
         },
         .x11 => {
-            ngui.addCSourceFiles(lvgl_x11_src, &lvgl_flags);
-            ngui.addCSourceFiles(&.{
-                "src/ui/c/drv_x11.c",
-                "src/ui/c/mouse_cursor_icon.c",
-            }, &ngui_cflags);
+            ngui.addCSourceFiles(.{ .files = lvgl_x11_src, .flags = &lvgl_flags });
+            ngui.addCSourceFiles(.{
+                .files = &.{
+                    "src/ui/c/drv_x11.c",
+                    "src/ui/c/mouse_cursor_icon.c",
+                },
+                .flags = &ngui_cflags,
+            });
             ngui.defineCMacro("USE_X11", "1");
             ngui.linkSystemLibrary("X11");
         },
         .fbev => {
-            ngui.addCSourceFiles(lvgl_fbev_src, &lvgl_flags);
-            ngui.addCSourceFile(.{ .file = .{ .path = "src/ui/c/drv_fbev.c" }, .flags = &ngui_cflags });
+            ngui.addCSourceFiles(.{ .files = lvgl_fbev_src, .flags = &lvgl_flags });
+            ngui.addCSourceFile(.{ .file = b.path("src/ui/c/drv_fbev.c"), .flags = &ngui_cflags });
             ngui.defineCMacro("USE_FBDEV", "1");
             ngui.defineCMacro("USE_EVDEV", "1");
         },
@@ -104,15 +109,15 @@ pub fn build(b: *std.Build) void {
     // daemon build
     const nd = b.addExecutable(.{
         .name = "nd",
-        .root_source_file = .{ .path = "src/nd.zig" },
+        .root_source_file = b.path("src/nd.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = strip,
     });
     nd.pie = true;
-    nd.strip = strip;
-    nd.addOptions("build_options", buildopts);
-    nd.addModule("nif", libnif_dep.module("nif"));
-    nd.addModule("ini", libini);
+    nd.root_module.addImport("build_options", buildopts_mod);
+    nd.root_module.addImport("nif", libnif_dep.module("nif"));
+    nd.root_module.addImport("ini", libini_dep.module("ini"));
     nd.linkLibrary(libnif);
 
     const nd_build_step = b.step("nd", "build nd (nakamochi daemon)");
@@ -121,15 +126,15 @@ pub fn build(b: *std.Build) void {
     // automated tests
     {
         const tests = b.addTest(.{
-            .root_source_file = .{ .path = "src/test.zig" },
+            .root_source_file = b.path("src/test.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
             .filter = b.option([]const u8, "test-filter", "run tests matching the filter"),
         });
-        tests.addOptions("build_options", buildopts);
-        tests.addModule("nif", libnif_dep.module("nif"));
-        tests.addModule("ini", libini);
+        tests.root_module.addImport("build_options", buildopts_mod);
+        tests.root_module.addImport("nif", libnif_dep.module("nif"));
+        tests.root_module.addImport("ini", libini_dep.module("ini"));
         tests.linkLibrary(libnif);
 
         const run_tests = b.addRunArtifact(tests);
@@ -141,11 +146,11 @@ pub fn build(b: *std.Build) void {
     {
         const guiplay = b.addExecutable(.{
             .name = "guiplay",
-            .root_source_file = .{ .path = "src/test/guiplay.zig" },
+            .root_source_file = b.path("src/test/guiplay.zig"),
             .target = target,
             .optimize = optimize,
         });
-        guiplay.addModule("comm", b.createModule(.{ .source_file = .{ .path = "src/comm.zig" } }));
+        guiplay.root_module.addImport("comm", b.createModule(.{ .root_source_file = b.path("src/comm.zig") }));
 
         const guiplay_build_step = b.step("guiplay", "build GUI playground");
         guiplay_build_step.dependOn(&b.addInstallArtifact(guiplay, .{}).step);
@@ -156,12 +161,12 @@ pub fn build(b: *std.Build) void {
     {
         const btcrpc = b.addExecutable(.{
             .name = "btcrpc",
-            .root_source_file = .{ .path = "src/test/btcrpc.zig" },
+            .root_source_file = b.path("src/test/btcrpc.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip,
         });
-        btcrpc.strip = strip;
-        btcrpc.addModule("bitcoindrpc", b.createModule(.{ .source_file = .{ .path = "src/bitcoindrpc.zig" } }));
+        btcrpc.root_module.addImport("bitcoindrpc", b.createModule(.{ .root_source_file = b.path("src/bitcoindrpc.zig") }));
 
         const btcrpc_build_step = b.step("btcrpc", "bitcoind RPC client playground");
         btcrpc_build_step.dependOn(&b.addInstallArtifact(btcrpc, .{}).step);
@@ -171,12 +176,12 @@ pub fn build(b: *std.Build) void {
     {
         const lndhc = b.addExecutable(.{
             .name = "lndhc",
-            .root_source_file = .{ .path = "src/test/lndhc.zig" },
+            .root_source_file = b.path("src/test/lndhc.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip,
         });
-        lndhc.strip = strip;
-        lndhc.addModule("lightning", b.createModule(.{ .source_file = .{ .path = "src/lightning.zig" } }));
+        lndhc.root_module.addImport("lightning", b.createModule(.{ .root_source_file = b.path("src/lightning.zig") }));
 
         const lndhc_build_step = b.step("lndhc", "lnd HTTP API client playground");
         lndhc_build_step.dependOn(&b.addInstallArtifact(lndhc, .{}).step);
@@ -423,7 +428,7 @@ const VersionStep = struct {
     }
 
     fn make(step: *std.Build.Step, _: *std.Progress.Node) anyerror!void {
-        const self = @fieldParentPtr(VersionStep, "step", step);
+        const self: *@This() = @fieldParentPtr("step", step);
         const semver = try self.eval();
         std.log.info("build version: {any}", .{semver});
         self.buildopts.addOption(std.SemanticVersion, "semver", semver);
@@ -460,7 +465,7 @@ const VersionStep = struct {
         const matchTag = self.b.fmt("{s}*.*.*", .{prefix});
         const cmd = [_][]const u8{ git, "-C", self.b.pathFromRoot("."), "describe", "--match", matchTag, "--tags", "--abbrev=8" };
         var code: u8 = undefined;
-        const git_describe = self.b.execAllowFail(&cmd, &code, .Ignore) catch return null;
+        const git_describe = self.b.runAllowFail(&cmd, &code, .Ignore) catch return null;
         const repotag = std.mem.trim(u8, git_describe, " \n\r")[prefix.len..];
         return std.SemanticVersion.parse(repotag) catch |err| ret: {
             std.log.err("unparsable git tag semver '{s}': {any}", .{ repotag, err });

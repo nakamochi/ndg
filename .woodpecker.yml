@@ -9,27 +9,27 @@ clone:
       recursive: false
 pipeline:
   lint:
-    image: git.qcode.ch/nakamochi/ci-zig0.11.0:v2
+    image: git.qcode.ch/nakamochi/ci-zig0.12.0:v1
     commands:
       - ./tools/fmt-check.sh
   test:
-    image: git.qcode.ch/nakamochi/ci-zig0.11.0:v2
+    image: git.qcode.ch/nakamochi/ci-zig0.12.0:v1
     commands:
       - zig build test
   sdl2:
-    image: git.qcode.ch/nakamochi/ci-zig0.11.0:v2
+    image: git.qcode.ch/nakamochi/ci-zig0.12.0:v1
     commands:
       - zig build -Ddriver=sdl2
   x11:
-    image: git.qcode.ch/nakamochi/ci-zig0.11.0:v2
+    image: git.qcode.ch/nakamochi/ci-zig0.12.0:v1
     commands:
       - zig build -Ddriver=x11
   aarch64:
-    image: git.qcode.ch/nakamochi/ci-zig0.11.0:v2
+    image: git.qcode.ch/nakamochi/ci-zig0.12.0:v1
     commands:
       - zig build -Ddriver=fbev -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe -Dstrip
       - sha256sum zig-out/bin/nd zig-out/bin/ngui
   playground:
-    image: git.qcode.ch/nakamochi/ci-zig0.11.0:v2
+    image: git.qcode.ch/nakamochi/ci-zig0.12.0:v1
     commands:
       - zig build guiplay btcrpc lndhc

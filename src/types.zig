@@ -40,8 +40,8 @@ pub const IoPipe = struct {
     w: std.fs.File,
 
     /// a pipe must be close'ed when done.
-    pub fn create() std.os.PipeError!IoPipe {
-        const fds = try std.os.pipe();
+    pub fn create() std.posix.PipeError!IoPipe {
+        const fds = try std.posix.pipe();
         return .{
             .r = std.fs.File{ .handle = fds[0] },
             .w = std.fs.File{ .handle = fds[1] },
@@ -138,7 +138,7 @@ pub fn Deinitable(comptime T: type) type {
         const Self = @This();
 
         pub fn init(allocator: std.mem.Allocator) !Self {
-            var res = Self{
+            const res = Self{
                 .arena = try allocator.create(std.heap.ArenaAllocator),
                 .value = undefined,
             };

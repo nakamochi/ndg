@@ -99,7 +99,7 @@ var tab: struct {
     } = null,
 
     fn initSetup(self: *@This(), topwin: lvgl.Window) !void {
-        var arena = try self.allocator.create(std.heap.ArenaAllocator);
+        const arena = try self.allocator.create(std.heap.ArenaAllocator);
         arena.* = std.heap.ArenaAllocator.init(tab.allocator);
         self.seed_setup = .{ .arena = arena, .topwin = topwin };
     }

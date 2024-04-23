@@ -1,6 +1,6 @@
 const buildopts = @import("build_options");
 const std = @import("std");
-const os = std.os;
+const posix = std.posix;
 const time = std.time;
 
 const comm = @import("comm.zig");
@@ -291,7 +291,7 @@ fn commThreadLoopCycle() !void {
 fn uiThreadLoop() void {
     while (true) {
         ui_mutex.lock();
-        var till_next_ms = lvgl.loopCycle(); // UI loop
+        const till_next_ms = lvgl.loopCycle(); // UI loop
         const do_state = state;
         ui_mutex.unlock();
 
@@ -391,7 +391,7 @@ fn sighandler(sig: c_int) callconv(.C) void {
         return;
     }
     switch (sig) {
-        os.SIG.INT, os.SIG.TERM => sigquit.set(),
+        posix.SIG.INT, posix.SIG.TERM => sigquit.set(),
         else => {},
     }
 }
@@ -440,13 +440,13 @@ pub fn main() anyerror!void {
     }
 
     // set up a sigterm handler for clean exit.
-    const sa = os.Sigaction{
+    const sa = posix.Sigaction{
         .handler = .{ .handler = sighandler },
-        .mask = os.empty_sigset,
+        .mask = posix.empty_sigset,
         .flags = 0,
     };
-    try os.sigaction(os.SIG.INT, &sa, null);
-    try os.sigaction(os.SIG.TERM, &sa, null);
+    try posix.sigaction(posix.SIG.INT, &sa, null);
+    try posix.sigaction(posix.SIG.TERM, &sa, null);
     sigquit.wait();
     logger.info("sigquit: terminating ...", .{});
 
