@@ -57,6 +57,11 @@ the CI runs code format checks, tests and builds for fbdev+evdev on aarch64
 and SDL2. it requires a container image with zig and clang tools such as
 clang-format.
 
+there is now support for GitHub Actions, it's described in the
+[.github/workflows/ci.yml](.github/workflows/ci.yml) file.
+
+below are description for the original CI setup.
+
 to make a new image and switch the CI to use it, first modify the
 [ci-containerfile](tools/ci-containerfile) and produce the image locally:
 
