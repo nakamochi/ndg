@@ -77,6 +77,7 @@ var tab: struct {
     // elements visibile during lnd startup.
     startup: lvgl.FlexLayout,
 
+    wallet_locked: lvgl.FlexLayout,
     // TODO: support wallet manual unlock (LightningError.code.Locked)
 
     // elements when lnd wallet is uninitialized.
@@ -115,7 +116,7 @@ var tab: struct {
         preserve_main_active_tab();
     }
 
-    fn setMode(self: *@This(), m: enum { setup, startup, operational }) void {
+    fn setMode(self: *@This(), m: enum { setup, startup, wallet_locked, operational }) void {
         switch (m) {
             .setup => {
                 self.nowallet.show();
@@ -129,6 +130,16 @@ var tab: struct {
             .startup => {
                 self.startup.show();
                 self.nowallet.hide();
+                self.info.card.hide();
+                self.balance.card.hide();
+                self.channels.card.hide();
+                self.pairing.hide();
+                self.reset.hide();
+            },
+            .wallet_locked => {
+                self.wallet_locked.show();
+                self.nowallet.hide();
+                self.startup.hide();
                 self.info.card.hide();
                 self.balance.card.hide();
                 self.channels.card.hide();
@@ -172,6 +183,14 @@ pub fn initTabPanel(allocator: std.mem.Allocator, cont: lvgl.Container) !void {
         const btn = try lvgl.TextButton.new(tab.nowallet, "SETUP NEW WALLET");
         btn.setWidth(lvgl.sizePercent(50));
         _ = btn.on(.click, nm_lnd_setup_click, null);
+    }
+
+    // locked wallet state
+    // TODO: handle this somehow, instead of just printing error
+    {
+        tab.wallet_locked = try lvgl.FlexLayout.new(parent, .row, .{ .all = .center });
+        tab.wallet_locked.resizeToMax();
+        _ = try lvgl.Label.new(tab.wallet_locked, "ERROR: lightning wallet is locked.", .{});
     }
 
     // regular operational mode
@@ -266,7 +285,8 @@ pub fn updateTabPanel(msg: comm.Message) !void {
     return switch (msg) {
         .lightning_error => |lnerr| switch (lnerr.code) {
             .uninitialized => tab.setMode(.setup),
-            // TODO: handle "wallet locked" and other errors
+            .locked => tab.setMode(.wallet_locked),
+            // TODO: handle other errors
             else => tab.setMode(.startup),
         },
         .lightning_report => |rep| blk: {
