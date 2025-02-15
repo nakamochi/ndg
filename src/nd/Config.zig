@@ -10,11 +10,11 @@ const logger = std.log.scoped(.config);
 
 // default values. these should match what's in the sysupdates repo.
 const SYSUPDATES_CRON_SCRIPT_PATH = "/etc/cron.hourly/sysupdate";
-/// must be the same as https://git.qcode.ch/nakamochi/sysupdates/src/branch/master/update.sh
+/// must be the same as https://github.com/nakamochi/sysupdates/blob/master/update.sh
 const SYSUPDATES_RUN_SCRIPT_NAME = "update.sh";
 const SYSUPDATES_RUN_SCRIPT_PATH = "/ssd/sysupdates/" ++ SYSUPDATES_RUN_SCRIPT_NAME;
 
-/// must be the same as https://git.qcode.ch/nakamochi/sysupdates/src/branch/master/lnd
+/// must be the same as https://github.com/nakamochi/sysupdates/tree/master/lnd
 pub const LND_OS_USER = "lnd";
 pub const LND_DATA_DIR = "/ssd/lnd/data";
 pub const LND_LOG_DIR = "/ssd/lnd/logs";
@@ -60,7 +60,7 @@ pub const StaticData = struct {
     bitcoind_rpc_pass: ?[]const u8,
 };
 
-/// enums must match git branches in https://git.qcode.ch/nakamochi/sysupdates.
+/// enums must match git branches in https://github.com/nakamochi/sysupdates
 pub const SysupdatesChannel = enum {
     master, // stable
     dev, // edge

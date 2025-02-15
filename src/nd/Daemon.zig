@@ -718,7 +718,7 @@ fn sendOnchainReport(self: *Daemon) !void {
             error.RpcInWarmup,
             // bitcoind is still starting up: pretend the repost is sent.
             // TODO: report actual startup ptogress to the UI
-            // https://git.qcode.ch/nakamochi/ndg/issues/30
+            // https://github.com/nakamochi/ndg/issues/2
             => return,
             // otherwise, propagate the error to the caller.
             else => return err,

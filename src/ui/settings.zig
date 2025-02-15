@@ -166,7 +166,7 @@ pub fn initScreenlockPanel(cont: lvgl.Container) !lvgl.Card {
 pub fn initSysupdatesPanel(cont: lvgl.Container) !lvgl.Card {
     tab.sysupdates.card = try lvgl.Card.new(cont, symbol.Loop ++ " SYSUPDATES", .{ .spinner = true });
     const l1 = try lvgl.Label.new(tab.sysupdates.card, "" //
-    ++ "https://git.qcode.ch/nakamochi/sysupdates " // TODO: make this configurable?
+    ++ "https://github.com/nakamochi/sysupdates " // TODO: make this configurable?
     ++ "is the source of system updates.", .{});
     l1.setPad(15, .top, .{});
     l1.setWidth(lvgl.sizePercent(100));
