@@ -106,14 +106,14 @@ pub const TestTimer = struct {
 /// the caller must deinit in the end.
 pub const TestChildProcess = struct {
     // test hooks
-    spawn_callback: ?*const fn (*TestChildProcess) std.ChildProcess.SpawnError!void = null,
-    wait_callback: ?*const fn (*TestChildProcess) anyerror!std.ChildProcess.Term = null,
-    kill_callback: ?*const fn (*TestChildProcess) anyerror!std.ChildProcess.Term = null,
+    spawn_callback: ?*const fn (*TestChildProcess) std.process.Child.SpawnError!void = null,
+    wait_callback: ?*const fn (*TestChildProcess) anyerror!std.process.Child.Term = null,
+    kill_callback: ?*const fn (*TestChildProcess) anyerror!std.process.Child.Term = null,
     spawned: bool = false,
     waited: bool = false,
     killed: bool = false,
 
-    // original std ChildProcess init args
+    // original std process.Child (ex ChildProcess) init args
     allocator: std.mem.Allocator,
     argv: []const []const u8,
 
@@ -133,14 +133,14 @@ pub const TestChildProcess = struct {
         self.allocator.free(self.argv);
     }
 
-    pub fn spawn(self: *TestChildProcess) std.ChildProcess.SpawnError!void {
+    pub fn spawn(self: *TestChildProcess) std.process.Child.SpawnError!void {
         defer self.spawned = true;
         if (self.spawn_callback) |cb| {
             return cb(self);
         }
     }
 
-    pub fn wait(self: *TestChildProcess) anyerror!std.ChildProcess.Term {
+    pub fn wait(self: *TestChildProcess) anyerror!std.process.Child.Term {
         defer self.waited = true;
         if (self.wait_callback) |cb| {
             return cb(self);
@@ -148,12 +148,12 @@ pub const TestChildProcess = struct {
         return .{ .Exited = 0 };
     }
 
-    pub fn spawnAndWait(self: *TestChildProcess) !std.ChildProcess.Term {
+    pub fn spawnAndWait(self: *TestChildProcess) !std.process.Child.Term {
         try self.spawn();
         return self.wait();
     }
 
-    pub fn kill(self: *TestChildProcess) !std.ChildProcess.Term {
+    pub fn kill(self: *TestChildProcess) !std.process.Child.Term {
         defer self.killed = true;
         if (self.kill_callback) |cb| {
             return cb(self);
@@ -236,12 +236,12 @@ pub const TestWpaControl = struct {
 /// unhandled types are passed to std.testing.expectEqualDeep.
 pub fn expectDeepEqual(expected: anytype, actual: @TypeOf(expected)) !void {
     switch (@typeInfo(@TypeOf(actual))) {
-        .Pointer => |p| {
+        .pointer => |p| {
             switch (p.size) {
-                .One => try expectDeepEqual(expected.*, actual.*),
-                .Slice => {
+                .one => try expectDeepEqual(expected.*, actual.*),
+                .slice => {
                     switch (@typeInfo(p.child)) {
-                        .Pointer, .Struct, .Optional, .Union => {
+                        .pointer, .@"struct", .optional, .@"union" => {
                             const err: ?anyerror = blk: {
                                 if (expected.len != actual.len) {
                                     std.debug.print("expected.len = {d}, actual.len = {d}\n", .{ expected.len, actual.len });
@@ -273,7 +273,7 @@ pub fn expectDeepEqual(expected: anytype, actual: @TypeOf(expected)) !void {
                 else => try std.testing.expectEqualDeep(expected, actual),
             }
         },
-        .Struct => |st| {
+        .@"struct" => |st| {
             inline for (st.fields) |f| {
                 expectDeepEqual(@field(expected, f.name), @field(actual, f.name)) catch |err| {
                     std.debug.print("unequal field '{s}' of struct {any}\n", .{ f.name, @TypeOf(actual) });
@@ -281,7 +281,7 @@ pub fn expectDeepEqual(expected: anytype, actual: @TypeOf(expected)) !void {
                 };
             }
         },
-        .Optional => {
+        .optional => {
             if (expected) |x| {
                 if (actual) |v| {
                     try expectDeepEqual(x, v);
@@ -296,7 +296,7 @@ pub fn expectDeepEqual(expected: anytype, actual: @TypeOf(expected)) !void {
                 }
             }
         },
-        .Union => |u| {
+        .@"union" => |u| {
             if (u.tag_type == null) {
                 @compileError("unable to compare untagged union values");
             }

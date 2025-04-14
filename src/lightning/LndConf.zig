@@ -130,7 +130,7 @@ pub fn load(allocator: std.mem.Allocator, filepath: []const u8) !LndConf {
 /// in the encountered order, with ascii characters of the name converted to lower case.
 /// values of identical key names are grouped into `PropValue.astr`.
 pub fn loadReader(allocator: std.mem.Allocator, r: anytype) !LndConf {
-    var parser = ini.parse(allocator, r);
+    var parser = ini.parse(allocator, r, ";");
     defer parser.deinit();
 
     var conf = try LndConf.init(allocator);
@@ -229,7 +229,7 @@ test "lnd: conf load dump" {
 
     var tmp = try tt.TempDir.create();
     defer tmp.cleanup();
-    try tmp.dir.writeFile("conf.ini",
+    try tmp.dir.writeFile(.{ .sub_path = "conf.ini", .data = 
         \\; top comment
         \\[application options]
         \\foo = bar
@@ -239,7 +239,7 @@ test "lnd: conf load dump" {
         \\
         \\[AutopiloT]
         \\autopilot.active=false
-    );
+    });
     const clean_conf =
         \\[application options]
         \\foo=bar

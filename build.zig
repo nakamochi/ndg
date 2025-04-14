@@ -71,16 +71,16 @@ pub fn build(b: *std.Build) void {
 
     ngui.root_module.addCMacro("NM_DISP_HOR", b.fmt("{d}", .{disp_horiz}));
     ngui.root_module.addCMacro("NM_DISP_VER", b.fmt("{d}", .{disp_vert}));
-    ngui.defineCMacro("LV_CONF_INCLUDE_SIMPLE", "1");
-    ngui.defineCMacro("LV_LOG_LEVEL", lvgl_loglevel.text());
-    ngui.defineCMacro("LV_TICK_CUSTOM", "1");
-    ngui.defineCMacro("LV_TICK_CUSTOM_INCLUDE", "\"lv_custom_tick.h\"");
-    ngui.defineCMacro("LV_TICK_CUSTOM_SYS_TIME_EXPR", "(nm_get_curr_tick())");
+    ngui.root_module.addCMacro("LV_CONF_INCLUDE_SIMPLE", "1");
+    ngui.root_module.addCMacro("LV_LOG_LEVEL", lvgl_loglevel.text());
+    ngui.root_module.addCMacro("LV_TICK_CUSTOM", "1");
+    ngui.root_module.addCMacro("LV_TICK_CUSTOM_INCLUDE", "\"lv_custom_tick.h\"");
+    ngui.root_module.addCMacro("LV_TICK_CUSTOM_SYS_TIME_EXPR", "(nm_get_curr_tick())");
     switch (drv) {
         .sdl2 => {
             ngui.addCSourceFiles(.{ .files = lvgl_sdl2_src, .flags = &lvgl_flags });
             ngui.addCSourceFile(.{ .file = b.path("src/ui/c/drv_sdl2.c"), .flags = &ngui_cflags });
-            ngui.defineCMacro("USE_SDL", "1");
+            ngui.root_module.addCMacro("USE_SDL", "1");
             ngui.linkSystemLibrary("SDL2");
         },
         .x11 => {
@@ -92,14 +92,14 @@ pub fn build(b: *std.Build) void {
                 },
                 .flags = &ngui_cflags,
             });
-            ngui.defineCMacro("USE_X11", "1");
+            ngui.root_module.addCMacro("USE_X11", "1");
             ngui.linkSystemLibrary("X11");
         },
         .fbev => {
             ngui.addCSourceFiles(.{ .files = lvgl_fbev_src, .flags = &lvgl_flags });
             ngui.addCSourceFile(.{ .file = b.path("src/ui/c/drv_fbev.c"), .flags = &ngui_cflags });
-            ngui.defineCMacro("USE_FBDEV", "1");
-            ngui.defineCMacro("USE_EVDEV", "1");
+            ngui.root_module.addCMacro("USE_FBDEV", "1");
+            ngui.root_module.addCMacro("USE_EVDEV", "1");
         },
     }
 
@@ -427,7 +427,7 @@ const VersionStep = struct {
         return &vstep.step;
     }
 
-    fn make(step: *std.Build.Step, _: *std.Progress.Node) anyerror!void {
+    fn make(step: *std.Build.Step, _: std.Build.Step.MakeOptions) anyerror!void {
         const self: *@This() = @fieldParentPtr("step", step);
         const semver = try self.eval();
         std.log.info("build version: {any}", .{semver});
