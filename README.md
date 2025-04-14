@@ -60,37 +60,9 @@ clang-format.
 there is now support for GitHub Actions, it's described in the
 [.github/workflows/ci.yml](.github/workflows/ci.yml) file.
 
-below are description for the original CI setup.
-
-to make a new image and switch the CI to use it, first modify the
-[ci-containerfile](tools/ci-containerfile) and produce the image locally:
-
-    podman build --rm -t ndg-ci -f ./tools/ci-containerfile \
-      --build-arg ZIGURL=https://ziglang.org/download/0.12.0/zig-linux-x86_64-0.12.0.tar.xz
-
-then tag it with the target URL, for example:
-
-    podman tag localhost/ndg-ci git.qcode.ch/nakamochi/ci-zig0.12.0:v1
-
-generate an [access token](https://git.qcode.ch/user/settings/applications),
-login to the container registry and push the image to remote:
-
-    podman login git.qcode.ch
-    podman push git.qcode.ch/nakamochi/ci-zig0.12.0:v1
-
-the image will be available at
-https://git.qcode.ch/nakamochi/-/packages/
-
-finally, delete the access token from
-https://git.qcode.ch/user/settings/applications
-
-what's left is to update the CI [build pipeline](.woodpecker.yml) and delete
-the older version of the image.
-
 ## contributing
 
-to contribute, create a pull request or send a patch with
-[git send-mail](https://git-scm.com/docs/git-send-email) to alex-dot-cloudware.io.
+to contribute, create a pull request.
 
 before sending a change, please make sure tests pass:
 
