@@ -218,7 +218,7 @@ fn commWriteThread(gpa: std.mem.Allocator, w: anytype) !void {
             const sett: comm.Message.Settings = .{
                 .slock_enabled = state.slock_pincode != null,
                 .hostname = state.nodename.val(),
-                .sysupdates = .{ .channel = .edge },
+                .sysupdates = .{ .url = "", .channel = .edge },
             };
             comm.write(gpa, w, .{ .settings = sett }) catch |err| {
                 logger.err("{}", .{err});

@@ -349,6 +349,7 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
                     .hostname = static.hostname,
                     .slock_enabled = conf.slock != null,
                     .sysupdates = .{
+                        .url = conf.sysurl,
                         .channel = switch (conf.syschannel) {
                             .dev => .edge,
                             .master => .stable,
@@ -1457,6 +1458,7 @@ fn dummyTestConfig() !Config {
         .confpath = "/dummy.conf",
         .data = .{
             .slock = null,
+            .sysurl = "",
             .syschannel = .master,
             .syscronscript = "",
             .sysrunscript = "",

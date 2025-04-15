@@ -67,6 +67,7 @@ var tab: struct {
         card: lvgl.Card,
         chansel: lvgl.Dropdown,
         switchbtn: lvgl.TextButton,
+        currurl: lvgl.Label,
         currchan: lvgl.Label,
     },
 } = undefined;
@@ -165,12 +166,10 @@ pub fn initScreenlockPanel(cont: lvgl.Container) !lvgl.Card {
 /// must be called only once at program startup.
 pub fn initSysupdatesPanel(cont: lvgl.Container) !lvgl.Card {
     tab.sysupdates.card = try lvgl.Card.new(cont, symbol.Loop ++ " SYSUPDATES", .{ .spinner = true });
-    const l1 = try lvgl.Label.new(tab.sysupdates.card, "" //
-    ++ "https://github.com/nakamochi/sysupdates " // TODO: make this configurable?
-    ++ "is the source of system updates.", .{});
-    l1.setPad(15, .top, .{});
-    l1.setWidth(lvgl.sizePercent(100));
-    l1.setHeightToContent();
+    tab.sysupdates.currurl = try lvgl.Label.new(tab.sysupdates.card, cmark ++ "CURRENT SOURCE:# unknown", .{ .recolor = true });
+    tab.sysupdates.currurl.setPad(15, .top, .{});
+    tab.sysupdates.currurl.setWidth(lvgl.sizePercent(100));
+    tab.sysupdates.currurl.setHeightToContent();
 
     const row = try lvgl.FlexLayout.new(tab.sysupdates.card, .row, .{});
     row.setWidth(lvgl.sizePercent(100));
@@ -214,6 +213,7 @@ pub fn initSysupdatesPanel(cont: lvgl.Container) !lvgl.Card {
 pub fn update(sett: comm.Message.Settings) !void {
     // sysupdates channel
     var buf: [512]u8 = undefined;
+    try tab.sysupdates.currurl.setTextFmt(&buf, cmark ++ "CURRENT SOURCE:# {s}", .{sett.sysupdates.url});
     try tab.sysupdates.currchan.setTextFmt(&buf, cmark ++ "CURRENT CHANNEL:# {s}", .{@tagName(sett.sysupdates.channel)});
     state.curr_sysupdates_chan = sett.sysupdates.channel;
 
