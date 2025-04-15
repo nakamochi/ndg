@@ -262,6 +262,7 @@ pub const Message = union(MessageTag) {
         slock_enabled: bool,
         hostname: []const u8, // see .set_nodename
         sysupdates: struct {
+            url: []const u8,
             channel: SysupdatesChan,
         },
     };

@@ -13,6 +13,7 @@ const SYSUPDATES_CRON_SCRIPT_PATH = "/etc/cron.hourly/sysupdate";
 /// must be the same as https://github.com/nakamochi/sysupdates/blob/master/update.sh
 const SYSUPDATES_RUN_SCRIPT_NAME = "update.sh";
 const SYSUPDATES_RUN_SCRIPT_PATH = "/ssd/sysupdates/" ++ SYSUPDATES_RUN_SCRIPT_NAME;
+const SYSUPDATES_DEFAULT_URL = "https://github.com/nakamochi/sysupdates.git";
 
 /// must be the same as https://github.com/nakamochi/sysupdates/tree/master/lnd
 pub const LND_OS_USER = "lnd";
@@ -47,6 +48,7 @@ pub const Data = struct {
         bcrypt_hash: []const u8, // std.crypto.bcrypt .phc format
         incorrect_attempts: u8, // reset after each successful unlock
     } = null,
+    sysurl: []const u8,
     syschannel: SysupdatesChannel,
     syscronscript: []const u8,
     sysrunscript: []const u8,
@@ -105,27 +107,47 @@ fn initData(allocator: std.mem.Allocator, filepath: []const u8) !Data {
 }
 
 fn inferData() Data {
+    const sysupdates_channel_data = inferSysupdatesChannel(SYSUPDATES_CRON_SCRIPT_PATH);
     return .{
-        .syschannel = inferSysupdatesChannel(SYSUPDATES_CRON_SCRIPT_PATH),
+        .sysurl = sysupdates_channel_data.url,
+        .syschannel = sysupdates_channel_data.channel,
         .syscronscript = SYSUPDATES_CRON_SCRIPT_PATH,
         .sysrunscript = SYSUPDATES_RUN_SCRIPT_PATH,
     };
 }
 
-fn inferSysupdatesChannel(cron_script_path: []const u8) SysupdatesChannel {
+fn inferSysupdatesChannel(cron_script_path: []const u8) struct { url: []const u8, channel: SysupdatesChannel } {
     var buf: [1024]u8 = undefined;
-    const bytes = std.fs.cwd().readFile(cron_script_path, &buf) catch return .master;
+    const bytes = std.fs.cwd().readFile(cron_script_path, &buf) catch return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = .master };
     var it = std.mem.tokenizeScalar(u8, bytes, '\n');
-    // looking for "/ssd/sysupdates/update.sh <channel>?" where <channel> may be in quotes
+    // looking for "/ssd/sysupdates/update.sh [<channel> [<url>]]", both may be in quotes
     const needle = SYSUPDATES_RUN_SCRIPT_NAME;
     while (it.next()) |line| {
         if (std.mem.indexOf(u8, line, needle)) |i| {
             var s = line[i + needle.len ..];
-            s = std.mem.trim(u8, s, " \n'\"");
-            return std.meta.stringToEnum(SysupdatesChannel, s) orelse .master;
+            const spacepos = std.mem.indexOf(u8, s, " ");
+            if (spacepos == null) {
+                s = std.mem.trim(u8, s, "\n'\"");
+                const channel = std.meta.stringToEnum(SysupdatesChannel, s) orelse return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = .master };
+                return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = channel };
+            } else {
+                var it2 = std.mem.tokenizeScalar(u8, s, ' ');
+                var channelstr = it2.next();
+                if (channelstr == null) {
+                    break;
+                }
+                channelstr = std.mem.trim(u8, channelstr.?, "\n'\"");
+                const channel = std.meta.stringToEnum(SysupdatesChannel, channelstr.?) orelse .master;
+                var url = it2.next();
+                if (url == null) {
+                    return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = channel };
+                }
+                url = std.mem.trim(u8, url.?, "\n'\"");
+                return .{ .url = url.?, .channel = channel };
+            }
         }
     }
-    return .master;
+    return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = .master };
 }
 
 fn inferStaticData(allocator: std.mem.Allocator) !StaticData {
@@ -509,6 +531,7 @@ test "ndconfig: init existing" {
     defer tmp.cleanup();
     try tmp.dir.writeFile("conf.json",
         \\{
+        \\"sysurl": "https://github.com/nakamochi/sysupdates.git",
         \\"syschannel": "dev",
         \\"syscronscript": "/cron/sysupdates.sh",
         \\"sysrunscript": "/sysupdates/run.sh"
@@ -546,6 +569,7 @@ test "ndconfig: dump" {
         .arena = &conf_arena,
         .confpath = confpath,
         .data = .{
+            .sysurl = SYSUPDATES_DEFAULT_URL,
             .syschannel = .master,
             .syscronscript = "cronscript.sh",
             .sysrunscript = "runscript.sh",
@@ -579,6 +603,7 @@ test "ndconfig: switch sysupdates and infer" {
         .arena = &conf_arena,
         .confpath = confpath,
         .data = .{
+            .sysurl = SYSUPDATES_DEFAULT_URL,
             .syschannel = .master,
             .syscronscript = cronscript,
             .sysrunscript = SYSUPDATES_RUN_SCRIPT_PATH,
@@ -591,7 +616,7 @@ test "ndconfig: switch sysupdates and infer" {
     const parsed = try testLoadConfigData(confpath);
     defer parsed.deinit();
     try t.expectEqual(SysupdatesChannel.dev, parsed.value.syschannel);
-    try t.expectEqual(SysupdatesChannel.dev, inferSysupdatesChannel(cronscript));
+    try t.expectEqual(SysupdatesChannel.dev, inferSysupdatesChannel(cronscript).channel);
 }
 
 test "ndconfig: switch sysupdates with .run=true" {
@@ -618,6 +643,7 @@ test "ndconfig: switch sysupdates with .run=true" {
         .arena = conf_arena,
         .confpath = try tmp.join(&.{"conf.json"}),
         .data = .{
+            .sysurl = SYSUPDATES_DEFAULT_URL,
             .syschannel = .master,
             .syscronscript = try tmp.join(&.{"cronscript.sh"}),
             .sysrunscript = try tmp.join(&.{runscript}),
@@ -653,6 +679,7 @@ test "ndconfig: genLndConfig" {
         .arena = conf_arena,
         .confpath = undefined, // unused
         .data = .{
+            .sysurl = SYSUPDATES_DEFAULT_URL,
             .syschannel = .master, // unused
             .syscronscript = undefined, // unused
             .sysrunscript = undefined, // unused
@@ -756,6 +783,7 @@ test "ndconfig: screen lock" {
         const confpath = try tmp.join(&.{"conf.json"});
         try tmp.dir.writeFile(confpath,
             \\{
+            \\"sysurl": "https://github.com/nakamochi/sysupdates.git",
             \\"syschannel": "dev",
             \\"syscronscript": "/cron/sysupdates.sh",
             \\"sysrunscript": "/sysupdates/run.sh"
@@ -774,6 +802,7 @@ test "ndconfig: screen lock" {
         try tmp.dir.writeFile(confpath,
             \\{
             \\"slock": null,
+            \\"sysurl": "https://github.com/nakamochi/sysupdates.git",
             \\"syschannel": "dev",
             \\"syscronscript": "/cron/sysupdates.sh",
             \\"sysrunscript": "/sysupdates/run.sh"
@@ -793,6 +822,7 @@ test "ndconfig: screen lock" {
             .confpath = newpinconf,
             .data = .{
                 .slock = null,
+                .sysurl = SYSUPDATES_DEFAULT_URL,
                 .syschannel = .master, // unused
                 .syscronscript = undefined, // unused
                 .sysrunscript = undefined, // unused
