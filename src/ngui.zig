@@ -445,8 +445,8 @@ pub fn main() anyerror!void {
         .mask = posix.empty_sigset,
         .flags = 0,
     };
-    try posix.sigaction(posix.SIG.INT, &sa, null);
-    try posix.sigaction(posix.SIG.TERM, &sa, null);
+    _ = posix.sigaction(posix.SIG.INT, &sa, null);
+    _ = posix.sigaction(posix.SIG.TERM, &sa, null);
     sigquit.wait();
     logger.info("sigquit: terminating ...", .{});
 

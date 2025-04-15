@@ -12,8 +12,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    lib.defineCMacro("CONFIG_CTRL_IFACE", null);
-    lib.defineCMacro("CONFIG_CTRL_IFACE_UNIX", null);
+    lib.root_module.addCMacro("CONFIG_CTRL_IFACE", "");
+    lib.root_module.addCMacro("CONFIG_CTRL_IFACE_UNIX", "");
     lib.addIncludePath(b.path("wpa_supplicant"));
     lib.addCSourceFiles(.{
         .files = &.{

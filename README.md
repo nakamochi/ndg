@@ -11,7 +11,7 @@ with `zig build`. otherwise, for macOS or non-X11 platforms use SDL2:
 
 ## local development
 
-you'll need [zig v0.12.x](https://ziglang.org/download/).
+you'll need [zig v0.14.x](https://ziglang.org/download/).
 if working on the gui using sdl2 driver, also [SDL2](https://www.libsdl.org/).
 
 note that compiling the daemon on macOS is currently unsupported since
