@@ -141,6 +141,8 @@ pub fn init(opt: InitOpt) !Daemon {
     try svlist.append(sys.Service.init(opt.allocator, sys.Service.LND, .{ .stop_wait_sec = 600 }));
     try svlist.append(sys.Service.init(opt.allocator, sys.Service.BITCOIND, .{ .stop_wait_sec = 600 }));
 
+    logger.debug("conf = {any}", .{opt.conf});
+
     return .{
         .allocator = opt.allocator,
         .conf = opt.conf,

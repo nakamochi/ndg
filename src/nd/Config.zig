@@ -48,7 +48,7 @@ pub const Data = struct {
         bcrypt_hash: []const u8, // std.crypto.bcrypt .phc format
         incorrect_attempts: u8, // reset after each successful unlock
     } = null,
-    sysurl: []const u8,
+    sysurl: []const u8 = SYSUPDATES_DEFAULT_URL, // sysupdates repo URL
     syschannel: SysupdatesChannel,
     syscronscript: []const u8,
     sysrunscript: []const u8,
@@ -95,7 +95,7 @@ pub fn deinit(self: Config) void {
 fn initData(allocator: std.mem.Allocator, filepath: []const u8) !Data {
     const maxsize: usize = 1 << 20; // 1Mb JSON conf file size should be more than enough
     const bytes = std.fs.cwd().readFileAlloc(allocator, filepath, maxsize) catch |err| switch (err) {
-        error.FileNotFound => return inferData(),
+        error.FileNotFound => return inferData(allocator),
         else => return err,
     };
     defer allocator.free(bytes);
@@ -106,8 +106,10 @@ fn initData(allocator: std.mem.Allocator, filepath: []const u8) !Data {
     };
 }
 
-fn inferData() Data {
-    const sysupdates_channel_data = inferSysupdatesChannel(SYSUPDATES_CRON_SCRIPT_PATH);
+fn inferData(allocator: std.mem.Allocator) Data {
+    const sysupdates_channel_data = inferSysupdatesChannel(allocator, SYSUPDATES_CRON_SCRIPT_PATH);
+    logger.info("inferred sysupdates source: {s}", .{sysupdates_channel_data.url});
+    logger.info("inferred sysupdates channel: {any}", .{sysupdates_channel_data.channel});
     return .{
         .sysurl = sysupdates_channel_data.url,
         .syschannel = sysupdates_channel_data.channel,
@@ -116,9 +118,10 @@ fn inferData() Data {
     };
 }
 
-fn inferSysupdatesChannel(cron_script_path: []const u8) struct { url: []const u8, channel: SysupdatesChannel } {
-    var buf: [1024]u8 = undefined;
-    const bytes = std.fs.cwd().readFile(cron_script_path, &buf) catch return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = .master };
+fn inferSysupdatesChannel(allocator: std.mem.Allocator, cron_script_path: []const u8) struct { url: []const u8, channel: SysupdatesChannel } {
+    // TODO: This is not quite correct, in case of FileNotFound, we aren't actually doing any sysupdates.
+    // Error should be returned and then UI should handle it and display this information to the user.
+    const bytes = std.fs.cwd().readFileAlloc(allocator, cron_script_path, 1024) catch return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = .master };
     var it = std.mem.tokenizeScalar(u8, bytes, '\n');
     // looking for "/ssd/sysupdates/update.sh [<channel> [<url>]]", both may be in quotes
     const needle = SYSUPDATES_RUN_SCRIPT_NAME;
@@ -539,6 +542,7 @@ test "ndconfig: init existing" {
     );
     const conf = try init(t.allocator, try tmp.join(&.{"conf.json"}));
     defer conf.deinit();
+    try t.expectEqualStrings("https://github.com/nakamochi/sysupdates.git", conf.data.sysurl);
     try t.expectEqual(SysupdatesChannel.dev, conf.data.syschannel);
     try t.expectEqualStrings("/cron/sysupdates.sh", conf.data.syscronscript);
     try t.expectEqualStrings("/sysupdates/run.sh", conf.data.sysrunscript);
@@ -549,6 +553,7 @@ test "ndconfig: init null" {
 
     const conf = try init(t.allocator, "/non/existent/config/file");
     defer conf.deinit();
+    try t.expectEqualStrings(SYSUPDATES_DEFAULT_URL, conf.data.sysurl);
     try t.expectEqual(SysupdatesChannel.master, conf.data.syschannel);
     try t.expectEqualStrings(SYSUPDATES_CRON_SCRIPT_PATH, conf.data.syscronscript);
     try t.expectEqualStrings(SYSUPDATES_RUN_SCRIPT_PATH, conf.data.sysrunscript);
@@ -581,6 +586,7 @@ test "ndconfig: dump" {
 
     const parsed = try testLoadConfigData(confpath);
     defer parsed.deinit();
+    try t.expectEqualStrings(SYSUPDATES_DEFAULT_URL, parsed.value.sysurl);
     try t.expectEqual(SysupdatesChannel.master, parsed.value.syschannel);
     try t.expectEqualStrings("cronscript.sh", parsed.value.syscronscript);
     try t.expectEqualStrings("runscript.sh", parsed.value.sysrunscript);
@@ -616,7 +622,6 @@ test "ndconfig: switch sysupdates and infer" {
     const parsed = try testLoadConfigData(confpath);
     defer parsed.deinit();
     try t.expectEqual(SysupdatesChannel.dev, parsed.value.syschannel);
-    try t.expectEqual(SysupdatesChannel.dev, inferSysupdatesChannel(cronscript).channel);
 }
 
 test "ndconfig: switch sysupdates with .run=true" {
