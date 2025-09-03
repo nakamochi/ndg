@@ -149,7 +149,7 @@ pub const Client = struct {
         const opt = std.http.Client.RequestOptions{
             .redirect_behavior = .not_allowed, // no redirects in REST API
             .headers = reqinfo.stdheaders,
-            .privileged_headers = reqinfo.xheaders,
+            .extra_headers = reqinfo.xheaders,
             .server_header_buffer = &headersbuf,
         };
         var req = try self.httpClient.open(reqinfo.httpmethod, reqinfo.url, opt);
