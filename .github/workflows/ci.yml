@@ -9,6 +9,9 @@ jobs:
           with:
             fetch-depth: 0
             fetch-tags: true
+            submodules: recursive
+        - name: Verify submodules
+          run: git submodule status --recursive
         - name: Set up Zig
           uses: goto-bus-stop/setup-zig@v2
           with:

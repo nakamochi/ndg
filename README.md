@@ -2,6 +2,7 @@
 
 release build for linux/aarch64, a raspberry pi 4:
 
+    git submodule update --init --recursive
     zig build -Dtarget=aarch64-linux-musl -Ddriver=fbev -Doptimize=ReleaseSafe -Dstrip
 
 a dev build for a native arch linux host running Xorg can be compiled simply
