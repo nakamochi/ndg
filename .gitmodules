@@ -1,0 +1,4 @@
+[submodule "lib/ini"]
+	path = lib/ini
+	url = https://github.com/ziglibs/ini.git
+	shallow = true
