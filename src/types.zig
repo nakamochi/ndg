@@ -22,7 +22,7 @@ pub usingnamespace if (builtin.is_test) struct {
 } else struct {
     // regular types for production code.
     pub const Timer = std.time.Timer;
-    pub const ChildProcess = std.ChildProcess;
+    pub const ChildProcess = std.process.Child;
     pub const WpaControl = nif.wpa.Control;
 
     pub fn getUserInfo(name: []const u8) !std.process.UserInfo {

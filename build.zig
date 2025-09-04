@@ -31,18 +31,21 @@ pub fn build(b: *std.Build) void {
     };
 
     // gui build
-    const ngui = b.addExecutable(.{
-        .name = "ngui",
+    const ngui = b.createModule(.{
         .root_source_file = b.path("src/ngui.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .strip = strip,
     });
-    ngui.pie = true;
-    ngui.root_module.addImport("build_options", buildopts_mod);
-    ngui.addIncludePath(b.path("lib"));
-    ngui.addIncludePath(b.path("src/ui/c"));
+    const ngui_exe = b.addExecutable(.{
+        .name = "ngui",
+        .root_module = ngui,
+    });
+    ngui_exe.pie = true;
+    ngui_exe.root_module.addImport("build_options", buildopts_mod);
+    ngui_exe.addIncludePath(b.path("lib"));
+    ngui_exe.addIncludePath(b.path("src/ui/c"));
 
     const lvgl_flags = .{
         "-std=c11",
@@ -50,7 +53,7 @@ pub fn build(b: *std.Build) void {
         "-Wformat",
         "-Wformat-security",
     } ++ common_cflags;
-    ngui.addCSourceFiles(.{ .files = lvgl_generic_src, .flags = &lvgl_flags });
+    ngui_exe.addCSourceFiles(.{ .files = lvgl_generic_src, .flags = &lvgl_flags });
 
     const ngui_cflags = .{
         "-std=c11",
@@ -58,7 +61,7 @@ pub fn build(b: *std.Build) void {
         "-Wunused-parameter",
         "-Werror",
     } ++ common_cflags;
-    ngui.addCSourceFiles(.{
+    ngui_exe.addCSourceFiles(.{
         .root = b.path("src/ui/c"),
         .files = &.{
             "ui.c",
@@ -69,69 +72,77 @@ pub fn build(b: *std.Build) void {
         .flags = &ngui_cflags,
     });
 
-    ngui.root_module.addCMacro("NM_DISP_HOR", b.fmt("{d}", .{disp_horiz}));
-    ngui.root_module.addCMacro("NM_DISP_VER", b.fmt("{d}", .{disp_vert}));
-    ngui.defineCMacro("LV_CONF_INCLUDE_SIMPLE", "1");
-    ngui.defineCMacro("LV_LOG_LEVEL", lvgl_loglevel.text());
-    ngui.defineCMacro("LV_TICK_CUSTOM", "1");
-    ngui.defineCMacro("LV_TICK_CUSTOM_INCLUDE", "\"lv_custom_tick.h\"");
-    ngui.defineCMacro("LV_TICK_CUSTOM_SYS_TIME_EXPR", "(nm_get_curr_tick())");
+    ngui_exe.root_module.addCMacro("NM_DISP_HOR", b.fmt("{d}", .{disp_horiz}));
+    ngui_exe.root_module.addCMacro("NM_DISP_VER", b.fmt("{d}", .{disp_vert}));
+    ngui_exe.root_module.addCMacro("LV_CONF_INCLUDE_SIMPLE", "1");
+    ngui_exe.root_module.addCMacro("LV_LOG_LEVEL", lvgl_loglevel.text());
+    ngui_exe.root_module.addCMacro("LV_TICK_CUSTOM", "1");
+    ngui_exe.root_module.addCMacro("LV_TICK_CUSTOM_INCLUDE", "\"lv_custom_tick.h\"");
+    ngui_exe.root_module.addCMacro("LV_TICK_CUSTOM_SYS_TIME_EXPR", "(nm_get_curr_tick())");
     switch (drv) {
         .sdl2 => {
-            ngui.addCSourceFiles(.{ .files = lvgl_sdl2_src, .flags = &lvgl_flags });
-            ngui.addCSourceFile(.{ .file = b.path("src/ui/c/drv_sdl2.c"), .flags = &ngui_cflags });
-            ngui.defineCMacro("USE_SDL", "1");
-            ngui.linkSystemLibrary("SDL2");
+            ngui_exe.addCSourceFiles(.{ .files = lvgl_sdl2_src, .flags = &lvgl_flags });
+            ngui_exe.addCSourceFile(.{ .file = b.path("src/ui/c/drv_sdl2.c"), .flags = &ngui_cflags });
+            ngui_exe.root_module.addCMacro("USE_SDL", "1");
+            ngui_exe.linkSystemLibrary("SDL2");
         },
         .x11 => {
-            ngui.addCSourceFiles(.{ .files = lvgl_x11_src, .flags = &lvgl_flags });
-            ngui.addCSourceFiles(.{
+            ngui_exe.addCSourceFiles(.{ .files = lvgl_x11_src, .flags = &lvgl_flags });
+            ngui_exe.addCSourceFiles(.{
                 .files = &.{
                     "src/ui/c/drv_x11.c",
                     "src/ui/c/mouse_cursor_icon.c",
                 },
                 .flags = &ngui_cflags,
             });
-            ngui.defineCMacro("USE_X11", "1");
-            ngui.linkSystemLibrary("X11");
+            ngui_exe.root_module.addCMacro("USE_X11", "1");
+            ngui_exe.linkSystemLibrary("X11");
         },
         .fbev => {
-            ngui.addCSourceFiles(.{ .files = lvgl_fbev_src, .flags = &lvgl_flags });
-            ngui.addCSourceFile(.{ .file = b.path("src/ui/c/drv_fbev.c"), .flags = &ngui_cflags });
-            ngui.defineCMacro("USE_FBDEV", "1");
-            ngui.defineCMacro("USE_EVDEV", "1");
+            ngui_exe.addCSourceFiles(.{ .files = lvgl_fbev_src, .flags = &lvgl_flags });
+            ngui_exe.addCSourceFile(.{ .file = b.path("src/ui/c/drv_fbev.c"), .flags = &ngui_cflags });
+            ngui_exe.root_module.addCMacro("USE_FBDEV", "1");
+            ngui_exe.root_module.addCMacro("USE_EVDEV", "1");
         },
     }
 
     const ngui_build_step = b.step("ngui", "build ngui (nakamochi gui)");
-    ngui_build_step.dependOn(&b.addInstallArtifact(ngui, .{}).step);
+    ngui_build_step.dependOn(&b.addInstallArtifact(ngui_exe, .{}).step);
 
     // daemon build
-    const nd = b.addExecutable(.{
-        .name = "nd",
+    const nd = b.createModule(.{
         .root_source_file = b.path("src/nd.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .strip = strip,
     });
-    nd.pie = true;
-    nd.root_module.addImport("build_options", buildopts_mod);
-    nd.root_module.addImport("nif", libnif_dep.module("nif"));
-    nd.root_module.addImport("ini", libini_dep.module("ini"));
-    nd.linkLibrary(libnif);
+    const nd_exe = b.addExecutable(.{
+        .name = "nd",
+        .root_module = nd,
+    });
+    nd_exe.pie = true;
+    nd_exe.root_module.addImport("build_options", buildopts_mod);
+    nd_exe.root_module.addImport("nif", libnif_dep.module("nif"));
+    nd_exe.root_module.addImport("ini", libini_dep.module("ini"));
+    nd_exe.linkLibrary(libnif);
 
     const nd_build_step = b.step("nd", "build nd (nakamochi daemon)");
-    nd_build_step.dependOn(&b.addInstallArtifact(nd, .{}).step);
+    nd_build_step.dependOn(&b.addInstallArtifact(nd_exe, .{}).step);
 
     // automated tests
     {
-        const tests = b.addTest(.{
+        const mod_tests = b.createModule(.{
             .root_source_file = b.path("src/test.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
-            .filter = b.option([]const u8, "test-filter", "run tests matching the filter"),
         });
+        const tests = b.addTest(.{
+            .root_module = mod_tests,
+            .filters = &.{b.option([]const u8, "test-filter", "run tests matching the filter") orelse ""},
+        });
+
         tests.root_module.addImport("build_options", buildopts_mod);
         tests.root_module.addImport("nif", libnif_dep.module("nif"));
         tests.root_module.addImport("ini", libini_dep.module("ini"));
@@ -144,47 +155,53 @@ pub fn build(b: *std.Build) void {
 
     // GUI playground
     {
-        const guiplay = b.addExecutable(.{
-            .name = "guiplay",
+        const guiplay = b.createModule(.{
             .root_source_file = b.path("src/test/guiplay.zig"),
             .target = target,
             .optimize = optimize,
         });
-        guiplay.root_module.addImport("comm", b.createModule(.{ .root_source_file = b.path("src/comm.zig") }));
+        const guiplay_exe = b.addExecutable(.{
+            .name = "guiplay",
+            .root_module = guiplay,
+        });
+        guiplay_exe.root_module.addImport("comm", b.createModule(.{ .root_source_file = b.path("src/comm.zig") }));
 
         const guiplay_build_step = b.step("guiplay", "build GUI playground");
-        guiplay_build_step.dependOn(&b.addInstallArtifact(guiplay, .{}).step);
+        guiplay_build_step.dependOn(&b.addInstallArtifact(guiplay_exe, .{}).step);
         guiplay_build_step.dependOn(ngui_build_step);
     }
 
     // bitcoind RPC client playground
     {
-        const btcrpc = b.addExecutable(.{
-            .name = "btcrpc",
+        const btcrpc = b.createModule(.{
             .root_source_file = b.path("src/test/btcrpc.zig"),
             .target = target,
             .optimize = optimize,
             .strip = strip,
         });
-        btcrpc.root_module.addImport("bitcoindrpc", b.createModule(.{ .root_source_file = b.path("src/bitcoindrpc.zig") }));
+        const btcrpc_exe = b.addExecutable(.{
+            .name = "btcrpc",
+            .root_module = btcrpc,
+        });
+        btcrpc_exe.root_module.addImport("bitcoindrpc", b.createModule(.{ .root_source_file = b.path("src/bitcoindrpc.zig") }));
 
         const btcrpc_build_step = b.step("btcrpc", "bitcoind RPC client playground");
-        btcrpc_build_step.dependOn(&b.addInstallArtifact(btcrpc, .{}).step);
+        btcrpc_build_step.dependOn(&b.addInstallArtifact(btcrpc_exe, .{}).step);
     }
 
     // lnd HTTP API client playground
     {
-        const lndhc = b.addExecutable(.{
-            .name = "lndhc",
+        const lndhc = b.createModule(.{
             .root_source_file = b.path("src/test/lndhc.zig"),
             .target = target,
             .optimize = optimize,
             .strip = strip,
         });
-        lndhc.root_module.addImport("lightning", b.createModule(.{ .root_source_file = b.path("src/lightning.zig") }));
+        const lndhc_exe = b.addExecutable(.{ .name = "lndhc", .root_module = lndhc });
+        lndhc_exe.root_module.addImport("lightning", b.createModule(.{ .root_source_file = b.path("src/lightning.zig") }));
 
         const lndhc_build_step = b.step("lndhc", "lnd HTTP API client playground");
-        lndhc_build_step.dependOn(&b.addInstallArtifact(lndhc, .{}).step);
+        lndhc_build_step.dependOn(&b.addInstallArtifact(lndhc_exe, .{}).step);
     }
 
     // default build step
@@ -376,7 +393,7 @@ const LVGLLogLevel = enum {
     none,
 
     /// returns default mode based on the compiler optimization flags.
-    fn default(mode: std.builtin.Mode) @This() {
+    fn default(mode: std.builtin.OptimizeMode) @This() {
         return switch (mode) {
             .Debug => .warn,
             .ReleaseSafe => .warn,
@@ -427,7 +444,7 @@ const VersionStep = struct {
         return &vstep.step;
     }
 
-    fn make(step: *std.Build.Step, _: *std.Progress.Node) anyerror!void {
+    fn make(step: *std.Build.Step, _: std.Build.Step.MakeOptions) anyerror!void {
         const self: *@This() = @fieldParentPtr("step", step);
         const semver = try self.eval();
         std.log.info("build version: {any}", .{semver});
