@@ -229,7 +229,7 @@ test "lnd: conf load dump" {
 
     var tmp = try tt.TempDir.create();
     defer tmp.cleanup();
-    try tmp.dir.writeFile("conf.ini",
+    try tmp.dir.writeFile(.{ .sub_path = "conf.ini", .data = 
         \\; top comment
         \\[application options]
         \\foo = bar
@@ -239,7 +239,7 @@ test "lnd: conf load dump" {
         \\
         \\[AutopiloT]
         \\autopilot.active=false
-    );
+    });
     const clean_conf =
         \\[application options]
         \\foo=bar

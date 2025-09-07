@@ -1,5 +1,6 @@
 .{
-    .name = "ndg",
+    .name = .ndg,
+    .fingerprint = 0x6f4f65601db92599,
     .version = "0.8.1",
     .dependencies = .{
         .nif = .{
