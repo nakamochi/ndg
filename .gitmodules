@@ -2,3 +2,6 @@
 	path = lib/ini
 	url = https://github.com/ziglibs/ini.git
 	shallow = true
+[submodule "lib/lvgl"]
+	path = lib/lvgl
+	url = https://github.com/lvgl/lvgl.git
