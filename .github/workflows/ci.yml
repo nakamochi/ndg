@@ -25,7 +25,9 @@ jobs:
 #            sudo apt-get install -y libsdl2-dev
 #            zig build -Ddriver=sdl2
         - name: Build X11
-          run: zig build -Ddriver=x11
+          run: |
+            sudo apt-get install -y libx11-dev
+            zig build -Ddriver=x11
         - name: Build Aarch64
           run: |
             zig build -Ddriver=fbev -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe -Dstrip
