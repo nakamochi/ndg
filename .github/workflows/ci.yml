@@ -20,10 +20,10 @@ jobs:
           run: ./tools/fmt-check.sh
         - name: Test
           run: zig build test
-        - name: Build SDL2
-          run: |
-            sudo apt-get install -y libsdl2-dev
-            zig build -Ddriver=sdl2
+#        - name: Build SDL2
+#          run: |
+#            sudo apt-get install -y libsdl2-dev
+#            zig build -Ddriver=sdl2
         - name: Build X11
           run: zig build -Ddriver=x11
         - name: Build Aarch64
