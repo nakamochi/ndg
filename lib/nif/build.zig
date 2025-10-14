@@ -5,19 +5,15 @@ pub fn build(b: *std.Build) void {
 
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const lib_mod = b.createModule(.{
+    const lib = b.addStaticLibrary(.{
+        .name = "nif",
         .root_source_file = b.path("nif.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    const lib = b.addLibrary(.{
-        .linkage = .static,
-        .name = "nif",
-        .root_module = lib_mod,
-    });
-    lib.root_module.addCMacro("CONFIG_CTRL_IFACE", "");
-    lib.root_module.addCMacro("CONFIG_CTRL_IFACE_UNIX", "");
+    lib.defineCMacro("CONFIG_CTRL_IFACE", null);
+    lib.defineCMacro("CONFIG_CTRL_IFACE_UNIX", null);
     lib.addIncludePath(b.path("wpa_supplicant"));
     lib.addCSourceFiles(.{
         .files = &.{

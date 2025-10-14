@@ -15,19 +15,17 @@ jobs:
         - name: Set up Zig
           uses: goto-bus-stop/setup-zig@v2
           with:
-            version: '0.14.1'
+            version: '0.12.1'
         - name: Lint
           run: ./tools/fmt-check.sh
         - name: Test
           run: zig build test
-#        - name: Build SDL2
-#          run: |
-#            sudo apt-get install -y libsdl2-dev
-#            zig build -Ddriver=sdl2
-        - name: Build X11
+        - name: Build SDL2
           run: |
-            sudo apt-get install -y libx11-dev
-            zig build -Ddriver=x11
+            sudo apt-get install -y libsdl2-dev
+            zig build -Ddriver=sdl2
+        - name: Build X11
+          run: zig build -Ddriver=x11
         - name: Build Aarch64
           run: |
             zig build -Ddriver=fbev -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe -Dstrip

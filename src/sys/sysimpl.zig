@@ -47,7 +47,7 @@ pub fn setHostname(allocator: std.mem.Allocator, name: []const u8) !void {
     }
 
     // make persistent change first
-    const opt: std.fs.Dir.AtomicFileOptions = .{ .mode = 0o644 };
+    const opt = .{ .mode = 0o644 };
     const file = try std.io.BufferedAtomicFile.create(allocator, std.fs.cwd(), hostname_filepath, opt);
     defer file.destroy(); // releases resources; does NOT deletes the file
     try file.writer().writeAll(newname);
@@ -72,7 +72,7 @@ test "setHostname" {
     var tmp = try tt.TempDir.create();
     defer tmp.cleanup();
     hostname_filepath = try tmp.join(&.{"hostname"});
-    try tmp.dir.writeFile(.{ .sub_path = hostname_filepath, .data = "dummy" });
+    try tmp.dir.writeFile(hostname_filepath, "dummy");
 
     try setHostname(arena, "123_-newhostname$%/3-4hello5\xef\x83\xa7end");
 
