@@ -200,7 +200,7 @@ fn inferBitcoindRpcPass(allocator: std.mem.Allocator) ![]const u8 {
 
 /// calls F while holding a readonly lock and passes on F's result as is.
 /// F is expected to take `Data` and `StaticData` args.
-pub fn safeReadOnly(self: *Config, comptime F: anytype) @typeInfo(@TypeOf(F)).@"fn".return_type.? {
+pub fn safeReadOnly(self: *Config, comptime F: anytype) @typeInfo(@TypeOf(F)).Fn.return_type.? {
     self.mu.lockShared();
     defer self.mu.unlockShared();
     return F(self.data, self.static);
@@ -214,7 +214,7 @@ pub fn verifySlockPin(self: *Config, input: []const u8) !void {
     defer self.mu.unlock();
     const slock = self.data.slock orelse return;
     defer self.dumpUnguarded() catch |errdump| logger.err("dumpUnguarded: {!}", .{errdump});
-    std.crypto.pwhash.bcrypt.strVerify(slock.bcrypt_hash, input, .{ .silently_truncate_password = false }) catch |err| {
+    std.crypto.pwhash.bcrypt.strVerify(slock.bcrypt_hash, input, .{}) catch |err| {
         if (err == error.PasswordVerificationFailed) {
             self.data.slock.?.incorrect_attempts += 1;
             return error.IncorrectSlockPin;
@@ -234,8 +234,9 @@ pub fn setSlockPin(self: *Config, code: ?[]const u8) !void {
     if (code) |s| {
         const bcrypt = std.crypto.pwhash.bcrypt;
         const opt: bcrypt.HashOptions = .{
-            .params = .{ .rounds_log = 12, .silently_truncate_password = false },
+            .params = .{ .rounds_log = 12 },
             .encoding = .phc,
+            .silently_truncate_password = false,
         };
         var buf: [bcrypt.hash_length * 2]u8 = undefined;
         const hash = try bcrypt.strHash(s, opt, &buf);
@@ -306,7 +307,7 @@ pub fn dump(self: *Config) !void {
 
 fn dumpUnguarded(self: Config) !void {
     const allocator = self.arena.child_allocator;
-    const opt: std.fs.Dir.AtomicFileOptions = .{ .mode = 0o600 };
+    const opt = .{ .mode = 0o600 };
     const file = try std.io.BufferedAtomicFile.create(allocator, std.fs.cwd(), self.confpath, opt);
     defer file.destroy();
     try std.json.stringify(self.data, .{ .whitespace = .indent_2 }, file.writer());
@@ -350,7 +351,7 @@ fn genSysupdatesCronScript(self: Config) !void {
         return error.NoSysRunScriptPath;
     }
     const allocator = self.arena.child_allocator;
-    const opt: std.fs.Dir.AtomicFileOptions = .{ .mode = 0o755 };
+    const opt = .{ .mode = 0o755 };
     const file = try std.io.BufferedAtomicFile.create(allocator, std.fs.cwd(), self.data.syscronscript, opt);
     defer file.destroy();
 
@@ -370,7 +371,7 @@ fn genSysupdatesCronScript(self: Config) !void {
 ///
 /// the caller must serialize this function calls.
 fn runSysupdates(allocator: std.mem.Allocator, scriptpath: []const u8) !void {
-    const res = try std.process.Child.run(.{ .allocator = allocator, .argv = &.{scriptpath} });
+    const res = try std.ChildProcess.run(.{ .allocator = allocator, .argv = &.{scriptpath} });
     defer {
         allocator.free(res.stdout);
         allocator.free(res.stderr);
@@ -430,7 +431,7 @@ pub fn makeWalletUnlockFile(self: Config, outbuf: []u8, comptime raw_size: usize
     const filepath = LND_WALLETUNLOCK_PATH;
 
     const allocator = self.arena.child_allocator;
-    const opt: std.fs.Dir.AtomicFileOptions = .{ .mode = 0o400 };
+    const opt = .{ .mode = 0o400 };
     const file = try std.io.BufferedAtomicFile.create(allocator, std.fs.cwd(), filepath, opt);
     defer file.destroy(); // frees resources; does NOT delete the file
 
@@ -531,14 +532,14 @@ test "ndconfig: init existing" {
 
     var tmp = try tt.TempDir.create();
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "conf.json", .data = 
+    try tmp.dir.writeFile("conf.json",
         \\{
         \\"sysurl": "https://github.com/nakamochi/sysupdates.git",
         \\"syschannel": "dev",
         \\"syscronscript": "/cron/sysupdates.sh",
         \\"sysrunscript": "/sysupdates/run.sh"
         \\}
-    });
+    );
     const conf = try init(t.allocator, try tmp.join(&.{"conf.json"}));
     defer conf.deinit();
     try t.expectEqualStrings("https://github.com/nakamochi/sysupdates.git", conf.data.sysurl);
@@ -601,7 +602,7 @@ test "ndconfig: switch sysupdates and infer" {
     var tmp = try tt.TempDir.create();
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "conf.json", .data = "" });
+    try tmp.dir.writeFile("conf.json", "");
     const confpath = try tmp.join(&.{"conf.json"});
     const cronscript = try tmp.join(&.{"cronscript.sh"});
     var conf = Config{
@@ -634,10 +635,10 @@ test "ndconfig: switch sysupdates with .run=true" {
     defer tmp.cleanup();
 
     const runscript = "runscript.sh";
-    try tmp.dir.writeFile(.{ .sub_path = runscript, .data = 
+    try tmp.dir.writeFile(runscript,
         \\#!/bin/sh
         \\printf "$1" > "$(dirname "$0")/success"
-    });
+    );
     {
         const file = try tmp.dir.openFile(runscript, .{});
         defer file.close();
@@ -665,7 +666,7 @@ fn testLoadConfigData(path: []const u8) !std.json.Parsed(Data) {
     const allocator = std.testing.allocator;
     const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 1 << 20);
     defer allocator.free(bytes);
-    const jopt: std.json.ParseOptions = .{ .ignore_unknown_fields = true, .allocate = .alloc_always };
+    const jopt = .{ .ignore_unknown_fields = true, .allocate = .alloc_always };
     return try std.json.parseFromSlice(Data, allocator, bytes, jopt);
 }
 
@@ -744,11 +745,11 @@ test "ndconfig: mutate LndConf" {
     };
     defer conf.deinit();
     const lndconf_path = try tmp.join(&.{"lndconf.ini"});
-    try tmp.dir.writeFile(.{ .sub_path = lndconf_path, .data = 
+    try tmp.dir.writeFile(lndconf_path,
         \\[application options]
         \\alias=noname
         \\
-    });
+    );
     var mut = try conf.beginMutateLndConf(.{ .filepath = lndconf_path });
     try mut.lndconf.setAlias("newalias");
     try mut.persist();
@@ -785,14 +786,14 @@ test "ndconfig: screen lock" {
     // conf file without slock field
     {
         const confpath = try tmp.join(&.{"conf.json"});
-        try tmp.dir.writeFile(.{ .sub_path = confpath, .data = 
+        try tmp.dir.writeFile(confpath,
             \\{
             \\"sysurl": "https://github.com/nakamochi/sysupdates.git",
             \\"syschannel": "dev",
             \\"syscronscript": "/cron/sysupdates.sh",
             \\"sysrunscript": "/sysupdates/run.sh"
             \\}
-        });
+        );
         var conf = try init(t.allocator, confpath);
         defer conf.deinit();
         try t.expect(conf.data.slock == null);
@@ -803,7 +804,7 @@ test "ndconfig: screen lock" {
     // conf file with null slock
     {
         const confpath = try tmp.join(&.{"conf.json"});
-        try tmp.dir.writeFile(.{ .sub_path = confpath, .data = 
+        try tmp.dir.writeFile(confpath,
             \\{
             \\"slock": null,
             \\"sysurl": "https://github.com/nakamochi/sysupdates.git",
@@ -811,7 +812,7 @@ test "ndconfig: screen lock" {
             \\"syscronscript": "/cron/sysupdates.sh",
             \\"sysrunscript": "/sysupdates/run.sh"
             \\}
-        });
+        );
         var conf = try init(t.allocator, confpath);
         defer conf.deinit();
         try t.expect(conf.data.slock == null);

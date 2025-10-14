@@ -143,13 +143,6 @@ pub fn init(opt: InitOpt) !Daemon {
 
     logger.debug("conf = {any}", .{opt.conf});
 
-    // Transfer ownership to a slice; ensure cleanup if subsequent initialisation fails.
-    const services_list = try svlist.toOwnedSlice();
-    errdefer {
-        for (services_list) |*sv| sv.deinit();
-        opt.allocator.free(services_list);
-    }
-
     return .{
         .allocator = opt.allocator,
         .conf = opt.conf,
@@ -158,7 +151,7 @@ pub fn init(opt: InitOpt) !Daemon {
         .wpa_ctrl = try types.WpaControl.open(opt.wpa),
         .state = .stopped,
         .screenstate = if (opt.conf.data.slock != null) .locked else .unlocked,
-        .services = .{ .list = services_list },
+        .services = .{ .list = try svlist.toOwnedSlice() },
         // send persisted settings immediately on start
         .want_settings = true,
         // send a network report right at start without wifi scan to make it faster.
@@ -704,9 +697,9 @@ fn readWPACtrlMsg(self: *Daemon) !void {
         if (mem.indexOf(u8, m, "CTRL-EVENT-SSID-TEMP-DISABLED") != null) {
             // TODO: what about CTRL-EVENT-DISCONNECTED bssid=xx:xx:xx:xx:xx:xx reason=15
             // CTRL-EVENT-SSID-TEMP-DISABLED id=1 ssid="<ssid>" auth_failures=3 duration=49 reason=WRONG_KEY
-            var it = mem.tokenizeScalar(u8, m, ' ');
+            var it = mem.tokenize(u8, m, " ");
             while (it.next()) |kv_str| {
-                var kv = mem.splitScalar(u8, kv_str, '=');
+                var kv = mem.split(u8, kv_str, "=");
                 if (mem.eql(u8, kv.first(), "auth_failures")) {
                     const v = kv.next();
                     if (v != null and !mem.eql(u8, v.?, "0")) {
@@ -869,7 +862,7 @@ fn sendLightningReport(self: *Daemon) !void {
         try feemap.put(item.chan_id, .{ .base = item.base_fee_msat, .ppm = item.fee_per_mil });
     }
 
-    var channels = std.ArrayList(@typeInfo(@TypeOf(lndrep.channels)).pointer.child).init(self.allocator);
+    var channels = std.ArrayList(@typeInfo(@TypeOf(lndrep.channels)).Pointer.child).init(self.allocator);
     defer channels.deinit();
     for (pending.value.pending_open_channels) |item| {
         try channels.append(.{

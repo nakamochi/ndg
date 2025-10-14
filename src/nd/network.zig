@@ -104,7 +104,7 @@ fn queryWifiSSID(gpa: mem.Allocator, wpa_ctrl: *types.WpaControl) !?[]const u8 {
     var buf: [512:0]u8 = undefined;
     const resp = try wpa_ctrl.request("STATUS", &buf, null);
     const ssid = "ssid=";
-    var it = mem.tokenizeScalar(u8, resp, '\n');
+    var it = mem.tokenize(u8, resp, "\n");
     while (it.next()) |line| {
         if (mem.startsWith(u8, line, ssid)) {
             // TODO: check line.len vs ssid.len
@@ -124,7 +124,7 @@ fn queryWifiScanResults(gpa: mem.Allocator, wpa_ctrl: *types.WpaControl) !types.
     var buf: [8192:0]u8 = undefined; // TODO: what if isn't enough?
     // first line is banner: "bssid / frequency / signal level / flags / ssid"
     const resp = try wpa_ctrl.request("SCAN_RESULTS", &buf, null);
-    var it = mem.tokenizeScalar(u8, resp, '\n');
+    var it = mem.tokenize(u8, resp, "\n");
     if (it.next() == null) {
         return error.MissingWifiScanHeader;
     }
@@ -157,14 +157,14 @@ fn queryWifiNetworksList(gpa: mem.Allocator, wpa_ctrl: *types.WpaControl, filter
     var buf: [8192:0]u8 = undefined; // TODO: is this enough?
     // first line is banner: "network id / ssid / bssid / flags"
     const resp = try wpa_ctrl.request("LIST_NETWORKS", &buf, null);
-    var it = mem.tokenizeScalar(u8, resp, '\n');
+    var it = mem.tokenize(u8, resp, "\n");
     if (it.next() == null) {
         return error.MissingWifiNetworksListHeader;
     }
 
     var list = std.ArrayList(u32).init(gpa);
     while (it.next()) |line| {
-        var cols = mem.tokenizeScalar(u8, line, '\t');
+        var cols = mem.tokenize(u8, line, "\t");
         const id_str = cols.next() orelse continue; // bad line format?
         const ssid = cols.next() orelse continue; // bad line format?
         const id = std.fmt.parseUnsigned(u32, id_str, 10) catch continue; // skip bad line

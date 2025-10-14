@@ -14,7 +14,7 @@ const logger = std.log.scoped(.ui_lnd);
 
 const appBitBanana = "BitBanana";
 const appZeus = "Zeus";
-const app_description = std.StaticStringMap([:0]const u8).initComptime(.{
+const app_description = std.ComptimeStringMap([:0]const u8, .{
     .{
         appBitBanana,
         \\lightning node management for android.

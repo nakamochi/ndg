@@ -15,7 +15,7 @@ jobs:
         - name: Set up Zig
           uses: goto-bus-stop/setup-zig@v2
           with:
-            version: '0.14.1'
+            version: '0.12.1'
         - name: Lint
           run: ./tools/fmt-check.sh
         - name: Test
