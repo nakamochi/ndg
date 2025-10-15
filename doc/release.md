@@ -36,7 +36,7 @@ ots stamp ndg-vX.Y.Z-aarch64.tar.gz.asc
 
 ## Step 4: Create GitHub release
 
-Go to the GitHub releases page for the repository and create a new release. Use the tag `vX.Y.Z` and upload the following files:
+Go to the GitHub [releases page for the repository](https://github.com/nakamochi/ndg/releases) and [create a new release](https://github.com/nakamochi/ndg/releases/new). Use the tag `vX.Y.Z` and upload the following files:
 
 - `ndg-vX.Y.Z-aarch64.tar.gz`
 - `ndg-vX.Y.Z-aarch64.tar.gz.asc`
