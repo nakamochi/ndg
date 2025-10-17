@@ -10,6 +10,10 @@ jobs:
             fetch-depth: 0
             fetch-tags: true
             submodules: recursive
+        - name: Run ShellCheck
+          uses: ludeeus/action-shellcheck@master
+          with:
+            ignore_paths: lib
         - name: Verify submodules
           run: git submodule status --recursive
         - name: Set up Zig
