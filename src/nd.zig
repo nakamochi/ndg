@@ -170,7 +170,7 @@ pub fn main() !void {
     if (conf.data.slock != null) {
         try ngui_args.append("-slock");
     }
-    var ngui = std.ChildProcess.init(ngui_args.items, gpa);
+    var ngui = std.process.Child.init(ngui_args.items, gpa);
     ngui.stdin_behavior = .Pipe;
     ngui.stdout_behavior = .Pipe;
     ngui.stderr_behavior = .Inherit;

@@ -37,9 +37,9 @@ pub const Status = enum(u8) {
 
 const State = union(Status) {
     initial: void,
-    started: std.ChildProcess.Term,
+    started: std.process.Child.Term,
     stopping: void,
-    stopped: std.ChildProcess.Term,
+    stopped: std.process.Child.Term,
 };
 
 const SysService = @This();
