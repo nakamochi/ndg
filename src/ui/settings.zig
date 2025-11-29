@@ -194,7 +194,8 @@ pub fn initSysupdatesPanel(cont: lvgl.Container) !lvgl.Card {
     tab.sysupdates.chansel = try lvgl.Dropdown.newStatic(right, blk: {
         // items order must match that of the switch in update fn.
         break :blk @tagName(comm.Message.SysupdatesChan.stable) // index 0
-        ++ "\n" ++ @tagName(comm.Message.SysupdatesChan.edge); // index 1
+        ++ "\n" ++ @tagName(comm.Message.SysupdatesChan.edge) // index 1
+        ++ "\n" ++ @tagName(comm.Message.SysupdatesChan.disabled);
     });
     tab.sysupdates.chansel.setWidth(lvgl.sizePercent(100));
     tab.sysupdates.chansel.setText(""); // show no pre-selected value

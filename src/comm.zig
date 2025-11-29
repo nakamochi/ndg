@@ -253,9 +253,11 @@ pub const Message = union(MessageTag) {
         // TODO: support extra fields for restoring an existing wallet, like recovery_window
     };
 
-    pub const SysupdatesChan = enum {
+    pub const SysupdatesChan = enum(u8) {
         stable, // master branch in sysupdates
         edge, // dev branch in sysupdates
+        // leave room for potential other branches in the future
+        disabled = 0xff,
     };
 
     pub const Settings = struct {
