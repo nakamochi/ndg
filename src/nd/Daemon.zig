@@ -702,9 +702,9 @@ fn readWPACtrlMsg(self: *Daemon) !void {
         if (mem.indexOf(u8, m, "CTRL-EVENT-SSID-TEMP-DISABLED") != null) {
             // TODO: what about CTRL-EVENT-DISCONNECTED bssid=xx:xx:xx:xx:xx:xx reason=15
             // CTRL-EVENT-SSID-TEMP-DISABLED id=1 ssid="<ssid>" auth_failures=3 duration=49 reason=WRONG_KEY
-            var it = mem.tokenize(u8, m, " ");
+            var it = mem.tokenizeScalar(u8, m, ' ');
             while (it.next()) |kv_str| {
-                var kv = mem.split(u8, kv_str, "=");
+                var kv = mem.splitScalar(u8, kv_str, '=');
                 if (mem.eql(u8, kv.first(), "auth_failures")) {
                     const v = kv.next();
                     if (v != null and !mem.eql(u8, v.?, "0")) {
