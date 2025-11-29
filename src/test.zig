@@ -106,9 +106,9 @@ pub const TestTimer = struct {
 /// the caller must deinit in the end.
 pub const TestChildProcess = struct {
     // test hooks
-    spawn_callback: ?*const fn (*TestChildProcess) std.ChildProcess.SpawnError!void = null,
-    wait_callback: ?*const fn (*TestChildProcess) anyerror!std.ChildProcess.Term = null,
-    kill_callback: ?*const fn (*TestChildProcess) anyerror!std.ChildProcess.Term = null,
+    spawn_callback: ?*const fn (*TestChildProcess) std.process.Child.SpawnError!void = null,
+    wait_callback: ?*const fn (*TestChildProcess) anyerror!std.process.Child.Term = null,
+    kill_callback: ?*const fn (*TestChildProcess) anyerror!std.process.Child.Term = null,
     spawned: bool = false,
     waited: bool = false,
     killed: bool = false,
@@ -133,14 +133,14 @@ pub const TestChildProcess = struct {
         self.allocator.free(self.argv);
     }
 
-    pub fn spawn(self: *TestChildProcess) std.ChildProcess.SpawnError!void {
+    pub fn spawn(self: *TestChildProcess) std.process.Child.SpawnError!void {
         defer self.spawned = true;
         if (self.spawn_callback) |cb| {
             return cb(self);
         }
     }
 
-    pub fn wait(self: *TestChildProcess) anyerror!std.ChildProcess.Term {
+    pub fn wait(self: *TestChildProcess) anyerror!std.process.Child.Term {
         defer self.waited = true;
         if (self.wait_callback) |cb| {
             return cb(self);
@@ -148,12 +148,12 @@ pub const TestChildProcess = struct {
         return .{ .Exited = 0 };
     }
 
-    pub fn spawnAndWait(self: *TestChildProcess) !std.ChildProcess.Term {
+    pub fn spawnAndWait(self: *TestChildProcess) !std.process.Child.Term {
         try self.spawn();
         return self.wait();
     }
 
-    pub fn kill(self: *TestChildProcess) !std.ChildProcess.Term {
+    pub fn kill(self: *TestChildProcess) !std.process.Child.Term {
         defer self.killed = true;
         if (self.kill_callback) |cb| {
             return cb(self);

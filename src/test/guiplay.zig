@@ -8,7 +8,7 @@ const types = @import("../types.zig");
 const logger = std.log.scoped(.play);
 const stderr = std.io.getStdErr().writer();
 
-var ngui_proc: std.ChildProcess = undefined;
+var ngui_proc: std.process.Child = undefined;
 var sigquit: std.Thread.ResetEvent = .{};
 
 fn sighandler(sig: c_int) callconv(.C) void {
@@ -358,7 +358,7 @@ pub fn main() !void {
     if (flags.slock) {
         try a.append("-slock");
     }
-    ngui_proc = std.ChildProcess.init(a.items, gpa);
+    ngui_proc = std.process.Child.init(a.items, gpa);
     ngui_proc.stdin_behavior = .Pipe;
     ngui_proc.stdout_behavior = .Pipe;
     ngui_proc.stderr_behavior = .Inherit;

@@ -385,7 +385,7 @@ fn genSysupdatesCronScript(self: Config) !void {
 ///
 /// the caller must serialize this function calls.
 fn runSysupdates(allocator: std.mem.Allocator, scriptpath: []const u8) !void {
-    const res = try std.ChildProcess.run(.{ .allocator = allocator, .argv = &.{scriptpath} });
+    const res = try std.process.Child.run(.{ .allocator = allocator, .argv = &.{scriptpath} });
     defer {
         allocator.free(res.stdout);
         allocator.free(res.stderr);
