@@ -66,6 +66,7 @@ pub const StaticData = struct {
 pub const SysupdatesChannel = enum {
     master, // stable
     dev, // edge
+    disabled,
 };
 
 const Config = @This();
@@ -108,8 +109,12 @@ fn initData(allocator: std.mem.Allocator, filepath: []const u8) !Data {
 
 fn inferData(allocator: std.mem.Allocator) Data {
     const sysupdates_channel_data = inferSysupdatesChannel(allocator, SYSUPDATES_CRON_SCRIPT_PATH);
-    logger.info("inferred sysupdates source: {s}", .{sysupdates_channel_data.url});
-    logger.info("inferred sysupdates channel: {any}", .{sysupdates_channel_data.channel});
+    if (sysupdates_channel_data.channel == .disabled) {
+        logger.info("sysupdates are disabled", .{});
+    } else {
+        logger.info("inferred sysupdates source: {s}", .{sysupdates_channel_data.url});
+        logger.info("inferred sysupdates channel: {any}", .{sysupdates_channel_data.channel});
+    }
     return .{
         .sysurl = sysupdates_channel_data.url,
         .syschannel = sysupdates_channel_data.channel,
@@ -119,9 +124,11 @@ fn inferData(allocator: std.mem.Allocator) Data {
 }
 
 fn inferSysupdatesChannel(allocator: std.mem.Allocator, cron_script_path: []const u8) struct { url: []const u8, channel: SysupdatesChannel } {
-    // TODO: This is not quite correct, in case of FileNotFound, we aren't actually doing any sysupdates.
-    // Error should be returned and then UI should handle it and display this information to the user.
-    const bytes = std.fs.cwd().readFileAlloc(allocator, cron_script_path, 1024) catch return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = .master };
+    const bytes = std.fs.cwd().readFileAlloc(allocator, cron_script_path, 1024) catch |err| {
+        logger.info("inferSysupdatesChannel: failed to read cron script at {s}: {!}", .{ cron_script_path, err });
+        return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = .disabled };
+    };
+    defer allocator.free(bytes);
     var it = std.mem.tokenizeScalar(u8, bytes, '\n');
     // looking for "/ssd/sysupdates/update.sh [<channel> [<url>]]", both may be in quotes
     const needle = SYSUPDATES_RUN_SCRIPT_NAME;
@@ -340,7 +347,7 @@ pub fn switchSysupdates(self: *Config, chan: SysupdatesChannel, opt: struct { ru
     try self.dumpUnguarded();
 
     try self.genSysupdatesCronScript();
-    if (opt.run) {
+    if (opt.run and chan != .disabled) {
         try runSysupdates(self.arena.child_allocator, self.data.syscronscript);
     }
 }
@@ -350,20 +357,27 @@ fn genSysupdatesCronScript(self: Config) !void {
     if (self.data.sysrunscript.len == 0) {
         return error.NoSysRunScriptPath;
     }
-    const allocator = self.arena.child_allocator;
-    const opt = .{ .mode = 0o755 };
-    const file = try std.io.BufferedAtomicFile.create(allocator, std.fs.cwd(), self.data.syscronscript, opt);
-    defer file.destroy();
+    if (self.data.syschannel != .disabled) {
+        const allocator = self.arena.child_allocator;
+        const opt = .{ .mode = 0o755 };
+        const file = try std.io.BufferedAtomicFile.create(allocator, std.fs.cwd(), self.data.syscronscript, opt);
+        defer file.destroy();
 
-    const script =
-        \\#!/bin/sh
-        \\exec {[path]s} "{[chan]s}"
-    ;
-    try std.fmt.format(file.writer(), script, .{
-        .path = self.data.sysrunscript,
-        .chan = @tagName(self.data.syschannel),
-    });
-    try file.finish();
+        const script =
+            \\#!/bin/sh
+            \\exec {[path]s} "{[chan]s}"
+        ;
+        try std.fmt.format(file.writer(), script, .{
+            .path = self.data.sysrunscript,
+            .chan = @tagName(self.data.syschannel),
+        });
+        try file.finish();
+    } else {
+        std.fs.cwd().deleteFile(self.data.syscronscript) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+    }
 }
 
 /// the scriptpath is typically the cronjob script, not a SYSUPDATES_RUN_SCRIPT
@@ -554,7 +568,7 @@ test "ndconfig: init null" {
     const conf = try init(t.allocator, "/non/existent/config/file");
     defer conf.deinit();
     try t.expectEqualStrings(SYSUPDATES_DEFAULT_URL, conf.data.sysurl);
-    try t.expectEqual(SysupdatesChannel.master, conf.data.syschannel);
+    try t.expectEqual(SysupdatesChannel.disabled, conf.data.syschannel);
     try t.expectEqualStrings(SYSUPDATES_CRON_SCRIPT_PATH, conf.data.syscronscript);
     try t.expectEqualStrings(SYSUPDATES_RUN_SCRIPT_PATH, conf.data.sysrunscript);
 }

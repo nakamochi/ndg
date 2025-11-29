@@ -355,6 +355,7 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
                         .channel = switch (conf.syschannel) {
                             .dev => .edge,
                             .master => .stable,
+                            .disabled => .disabled,
                         },
                     },
                 };
@@ -472,7 +473,11 @@ fn commThreadLoop(self: *Daemon) void {
             },
             .switch_sysupdates => |chan| {
                 if (self.screenstate != .locked) {
-                    logger.info("switching sysupdates channel to {s}", .{@tagName(chan)});
+                    if (chan != .disabled) {
+                        logger.info("switching sysupdates channel to {s}", .{@tagName(chan)});
+                    } else {
+                        logger.info("disabling sysupdates", .{});
+                    }
                     self.switchSysupdates(chan) catch |err| {
                         logger.err("switchSysupdates: {any}", .{err});
                         // TODO: send err back to ngui
@@ -1196,6 +1201,7 @@ fn switchSysupdatesThread(self: *Daemon, chan: comm.Message.SysupdatesChan) void
     const conf_chan: Config.SysupdatesChannel = switch (chan) {
         .stable => .master,
         .edge => .dev,
+        .disabled => .disabled,
     };
     self.conf.switchSysupdates(conf_chan, .{ .run = true }) catch |err| {
         logger.err("config.switchSysupdates: {any}", .{err});
