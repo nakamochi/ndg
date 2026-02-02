@@ -153,7 +153,8 @@ fn inferSysupdatesChannel(allocator: std.mem.Allocator, cron_script_path: []cons
                     return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = channel };
                 }
                 url = std.mem.trim(u8, url.?, "\n'\"");
-                return .{ .url = url.?, .channel = channel };
+                const url_owned = allocator.dupe(u8, url.?) catch SYSUPDATES_DEFAULT_URL;
+                return .{ .url = url_owned, .channel = channel };
             }
         }
     }
@@ -178,9 +179,12 @@ fn inferStaticData(allocator: std.mem.Allocator) !StaticData {
 
 fn inferLndTorHostname(allocator: std.mem.Allocator) ![]const u8 {
     const raw = try std.fs.cwd().readFileAlloc(allocator, TOR_DATA_DIR ++ "/lnd/hostname", 1024);
+    defer allocator.free(raw);
+
     const hostname = std.mem.trim(u8, raw, &std.ascii.whitespace);
     logger.info("inferred lnd tor hostname: [{s}]", .{hostname});
-    return hostname;
+
+    return try allocator.dupe(u8, hostname);
 }
 
 fn inferBitcoindRpcPass(allocator: std.mem.Allocator) ![]const u8 {
@@ -189,6 +193,8 @@ fn inferBitcoindRpcPass(allocator: std.mem.Allocator) ![]const u8 {
     // line containing "rpcauth.py".
     // TODO: get rid of the hack; do something more robust
     const conf = try std.fs.cwd().readFileAlloc(allocator, BITCOIND_CONFIG_PATH, 1024 * 1024);
+    defer allocator.free(conf);
+
     var it = std.mem.tokenizeScalar(u8, conf, '\n');
     var next_is_pass = false;
     while (it.next()) |line| {
@@ -196,7 +202,8 @@ fn inferBitcoindRpcPass(allocator: std.mem.Allocator) ![]const u8 {
             if (!std.mem.startsWith(u8, line, "#")) {
                 return error.UninferrableBitcoindRpcPass;
             }
-            return std.mem.trim(u8, line[1..], &std.ascii.whitespace);
+            const pass = std.mem.trim(u8, line[1..], &std.ascii.whitespace);
+            return try allocator.dupe(u8, pass);
         }
         if (std.mem.startsWith(u8, line, "#") and std.mem.indexOf(u8, line, "rpcauth.py") != null) {
             next_is_pass = true;
