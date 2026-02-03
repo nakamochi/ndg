@@ -811,6 +811,16 @@ pub const TextArea = struct {
         }
     }
 
+    pub fn setOneLine(self: TextArea, enable: bool) void {
+        lv_textarea_set_one_line(self.lvobj, enable);
+    }
+
+    /// Placeholder text shown when the textarea is empty.
+    /// `txt` is heap-duplicated by LVGL and owned by the textarea object.
+    pub fn setPlaceholderText(self: TextArea, txt: [:0]const u8) void {
+        lv_textarea_set_placeholder_text(self.lvobj, txt.ptr);
+    }
+
     /// `text` arg is heap-duplicated by LVGL's alloc and owned by this text area object.
     pub fn setText(self: TextArea, txt: [:0]const u8) void {
         lv_textarea_set_text(self.lvobj, txt.ptr);
@@ -1267,6 +1277,7 @@ extern fn lv_textarea_set_max_length(obj: *LvObj, n: u32) void;
 extern fn lv_textarea_set_one_line(obj: *LvObj, enable: bool) void;
 extern fn lv_textarea_set_password_mode(obj: *LvObj, enable: bool) void;
 extern fn lv_textarea_set_text(obj: *LvObj, text: [*:0]const u8) void;
+extern fn lv_textarea_set_placeholder_text(obj: *LvObj, text: [*:0]const u8) void;
 
 extern fn lv_dropdown_create(parent: *LvObj) ?*LvObj;
 extern fn lv_dropdown_set_text(obj: *LvObj, text: ?[*:0]const u8) void;

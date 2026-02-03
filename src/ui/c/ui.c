@@ -123,6 +123,7 @@ extern void nm_keyboard_popon(lv_obj_t *input)
     lv_obj_update_layout(tabview); /* make sure sizes are recalculated */
     lv_obj_set_height(tabview, NM_DISP_VER - lv_obj_get_height(virt_keyboard));
     lv_obj_clear_flag(virt_keyboard, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(virt_keyboard);
     lv_obj_scroll_to_view_recursive(input, LV_ANIM_OFF);
 }
 
