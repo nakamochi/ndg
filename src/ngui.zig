@@ -141,8 +141,12 @@ export fn nm_sys_shutdown() void {
 
 export fn nm_tab_settings_active() void {
     logger.info("starting wifi scan", .{});
+    // Force nd to refresh settings (incl sysupdates HEAD) on entering the settings tab.
+    comm.pipeWrite(comm.Message{ .get_settings = {} }) catch |err|
+        logger.err("nm_tab_settings_active: get_settings: {any}", .{err});
     const msg = comm.Message{ .get_network_report = .{ .scan = true } };
-    comm.pipeWrite(msg) catch |err| logger.err("nm_tab_settings_active: {any}", .{err});
+    comm.pipeWrite(msg) catch |err|
+        logger.err("nm_tab_settings_active: {any}", .{err});
 }
 
 export fn nm_request_network_status(t: *lvgl.LvTimer) void {
@@ -414,6 +418,9 @@ pub fn main() anyerror!void {
 
     // initialize global nd/ngui pipe plumbing.
     comm.initPipe(gpa, .{ .r = std.io.getStdIn(), .w = std.io.getStdOut() });
+
+    comm.pipeWrite(comm.Message{ .get_settings = {} }) catch |err|
+        logger.err("startup: get_settings: {any}", .{err});
 
     // initalizes display, input driver and finally creates the user interface.
     ui.init(.{ .allocator = gpa, .slock = flags.slock }) catch |err| {
