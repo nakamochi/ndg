@@ -69,6 +69,8 @@ want_lnd_report: bool,
 lnd_timer: time.Timer,
 lnd_report_interval: u64 = 1 * time.ns_per_min,
 lnd_tls_reset_count: usize = 0,
+sysupdates_head: ?[]u8 = null,
+next_head_refresh_ns: i128 = 0,
 
 // TODO: move this to a sys.ServiceList
 /// system services actively managed by the daemon.
@@ -143,7 +145,7 @@ pub fn init(opt: InitOpt) !Daemon {
 
     logger.debug("conf = {any}", .{opt.conf});
 
-    return .{
+    var d: Daemon = .{
         .allocator = opt.allocator,
         .conf = opt.conf,
         .uireader = opt.uir,
@@ -164,7 +166,12 @@ pub fn init(opt: InitOpt) !Daemon {
         // report lightning status immediately on start
         .want_lnd_report = true,
         .lnd_timer = try time.Timer.start(),
+        .next_head_refresh_ns = 0,
+        .sysupdates_head = null,
     };
+
+    d.refreshSysupdatesHead();
+    return d;
 }
 
 /// releases all associated resources.
@@ -172,6 +179,9 @@ pub fn init(opt: InitOpt) !Daemon {
 pub fn deinit(self: *Daemon) void {
     self.wpa_ctrl.close() catch |err| logger.err("deinit: wpa_ctrl.close: {any}", .{err});
     self.services.deinit(self.allocator);
+    if (self.sysupdates_head) |head| {
+        self.allocator.free(head);
+    }
 }
 
 /// start launches daemon threads and returns immediately.
@@ -338,16 +348,32 @@ fn mainThreadLoop(self: *Daemon) void {
     logger.info("exiting main thread loop", .{});
 }
 
+const HEAD_REFRESH_PERIOD_NS: i128 = 60 * std.time.ns_per_s;
+
 /// runs one cycle of the main thread loop iteration.
-/// the cycle holds self.mu for the whole duration.
+/// briefly locks self.mu to decide on refresh, then holds self.mu
 fn mainThreadLoopCycle(self: *Daemon) !void {
+    // decide whether to refresh (fast)
+    var do_refresh = false;
+    const now = std.time.nanoTimestamp();
+    self.mu.lock();
+    if (now >= self.next_head_refresh_ns) {
+        self.next_head_refresh_ns = now + HEAD_REFRESH_PERIOD_NS;
+        do_refresh = true;
+    }
+    self.mu.unlock();
+
+    if (do_refresh) self.refreshSysupdatesHead();
+
     self.mu.lock();
     defer self.mu.unlock();
 
     if (self.want_settings) {
-        const ok = self.conf.safeReadOnly(struct {
-            fn f(conf: Config.Data, static: Config.StaticData) bool {
-                const msg: comm.Message.Settings = .{
+        const head_override: ?[]const u8 = self.sysupdates_head;
+
+        const msg_opt = self.conf.safeReadOnly(struct {
+            fn f(conf: Config.Data, static: Config.StaticData) ?comm.Message.Settings {
+                return .{
                     .hostname = static.hostname,
                     .slock_enabled = conf.slock != null,
                     .sysupdates = .{
@@ -357,16 +383,23 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
                             .master => .stable,
                             .disabled => .disabled,
                         },
+                        .head = conf.head, // temporary; caller may override
                     },
                 };
-                comm.pipeWrite(.{ .settings = msg }) catch |err| {
-                    logger.err("{}", .{err});
-                    return false;
-                };
-                return true;
             }
         }.f);
-        self.want_settings = !ok;
+
+        if (msg_opt) |msg_const| {
+            var msg = msg_const;
+            msg.sysupdates.head = if (head_override) |h| h else msg.sysupdates.head;
+
+            var ok = true;
+            comm.pipeWrite(.{ .settings = msg }) catch |err| {
+                logger.err("{}", .{err});
+                ok = false;
+            };
+            self.want_settings = !ok;
+        }
     }
 
     // network stats
@@ -538,6 +571,12 @@ fn commThreadLoop(self: *Daemon) void {
             },
             .unlock_screen => |pincode| {
                 self.unlockScreen(pincode) catch |err| logger.err("unlockScreen: {!}", .{err});
+            },
+            .get_settings => {
+                self.refreshSysupdatesHead();
+                self.mu.lock();
+                self.want_settings = true;
+                self.mu.unlock();
             },
             else => |v| logger.warn("unhandled msg tag {s}", .{@tagName(v)}),
         }
@@ -1290,6 +1329,56 @@ fn allocSanitizeNodename(allocator: std.mem.Allocator, name: []const u8) ![]cons
     }
     const trimmed = std.mem.trim(u8, sanitized.items, &std.ascii.whitespace);
     return allocator.dupe(u8, trimmed);
+}
+
+fn readGitHeadOwned(self: *Daemon) ?[]u8 {
+    std.fs.accessAbsolute(Config.SYSUPDATES_LOCAL_REPO_PATH, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => {
+            logger.debug("readGitHeadOwned: access check failed: {any}", .{err});
+            // Proceed anyway; git command will provide a clearer error if needed
+        },
+    };
+
+    const res = std.process.Child.run(.{
+        .allocator = self.allocator,
+        .argv = &.{ "git", "-C", Config.SYSUPDATES_LOCAL_REPO_PATH, "rev-parse", "--short", "HEAD" },
+    }) catch |err| {
+        // In tests, git may not exist; keep this non-fatal.
+        logger.debug("readGitHeadOwned: git failed: {any}", .{err});
+        return null;
+    };
+    defer {
+        self.allocator.free(res.stdout);
+        self.allocator.free(res.stderr);
+    }
+
+    if (res.term != .Exited or res.term.Exited != 0) {
+        // If it's missing/not a repo, be quiet (or debug), not error.
+        logger.debug("readGitHeadOwned: git exit {any}; stderr={s}", .{ res.term, res.stderr });
+        return null;
+    }
+
+    const head = std.mem.trim(u8, res.stdout, &std.ascii.whitespace);
+    return self.allocator.dupe(u8, head) catch null;
+}
+
+fn refreshSysupdatesHead(self: *Daemon) void {
+    const new = self.readGitHeadOwned() orelse return;
+
+    self.mu.lock();
+    defer self.mu.unlock();
+
+    if (self.sysupdates_head) |old| {
+        if (std.mem.eql(u8, old, new)) {
+            self.allocator.free(new);
+            return;
+        }
+        logger.info("sysupdates head changed: {s} -> {s}", .{ old, new });
+        self.allocator.free(old);
+    }
+    self.sysupdates_head = new;
+    self.want_settings = true;
 }
 
 test "daemon: start-stop" {

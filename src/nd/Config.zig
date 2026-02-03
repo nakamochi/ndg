@@ -12,7 +12,8 @@ const logger = std.log.scoped(.config);
 const SYSUPDATES_CRON_SCRIPT_PATH = "/etc/cron.hourly/sysupdate";
 /// must be the same as https://github.com/nakamochi/sysupdates/blob/master/update.sh
 const SYSUPDATES_RUN_SCRIPT_NAME = "update.sh";
-const SYSUPDATES_RUN_SCRIPT_PATH = "/ssd/sysupdates/" ++ SYSUPDATES_RUN_SCRIPT_NAME;
+pub const SYSUPDATES_LOCAL_REPO_PATH = "/ssd/sysupdates";
+const SYSUPDATES_RUN_SCRIPT_PATH = SYSUPDATES_LOCAL_REPO_PATH ++ "/" ++ SYSUPDATES_RUN_SCRIPT_NAME;
 const SYSUPDATES_DEFAULT_URL = "https://github.com/nakamochi/sysupdates.git";
 
 /// must be the same as https://github.com/nakamochi/sysupdates/tree/master/lnd
@@ -52,6 +53,7 @@ pub const Data = struct {
     syschannel: SysupdatesChannel,
     syscronscript: []const u8,
     sysrunscript: []const u8,
+    head: []const u8 = "", // current HEAD commit hash of local sysupdates repo
 };
 
 /// static data is interred at init and never changes except for hostname - see `setHostname`.
@@ -109,6 +111,8 @@ fn initData(allocator: std.mem.Allocator, filepath: []const u8) !Data {
 
 fn inferData(allocator: std.mem.Allocator) Data {
     const sysupdates_channel_data = inferSysupdatesChannel(allocator, SYSUPDATES_CRON_SCRIPT_PATH);
+    const sysupdates_current_state = inferCurrentUpdateState(allocator, SYSUPDATES_LOCAL_REPO_PATH);
+    logger.info("inferred sysupdates current HEAD: {s}", .{sysupdates_current_state});
     if (sysupdates_channel_data.channel == .disabled) {
         logger.info("sysupdates are disabled", .{});
     } else {
@@ -120,6 +124,7 @@ fn inferData(allocator: std.mem.Allocator) Data {
         .syschannel = sysupdates_channel_data.channel,
         .syscronscript = SYSUPDATES_CRON_SCRIPT_PATH,
         .sysrunscript = SYSUPDATES_RUN_SCRIPT_PATH,
+        .head = sysupdates_current_state,
     };
 }
 
@@ -159,6 +164,47 @@ fn inferSysupdatesChannel(allocator: std.mem.Allocator, cron_script_path: []cons
         }
     }
     return .{ .url = SYSUPDATES_DEFAULT_URL, .channel = .master };
+}
+
+fn inferCurrentUpdateState(allocator: std.mem.Allocator, local_repo_path: []const u8) []const u8 {
+    // In tests (or some deployments) the repo path may not exist.
+    // Treat that as "unknown" without logging an error.
+    {
+        var d = std.fs.cwd().openDir(local_repo_path, .{}) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => return "",
+            else => {
+                logger.debug("inferCurrentUpdateState: openDir({s}) failed: {any}", .{ local_repo_path, err });
+                return "";
+            },
+        };
+        d.close();
+    }
+
+    // TODO: there are git rev-parse calls both here and in Daemon.zig, refactor later to avoid duplication.
+    const res = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "git", "-C", local_repo_path, "rev-parse", "--short", "HEAD" },
+    }) catch |err| {
+        // git missing or spawn error; keep it non-fatal/noisy.
+        logger.debug("inferCurrentUpdateState: failed to run git: {any}", .{err});
+        return "";
+    };
+    defer {
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+    }
+
+    if (res.term != .Exited or res.term.Exited != 0) {
+        // Common cases: not a git repo, cannot chdir, etc. Avoid error logs in tests.
+        logger.debug(
+            "inferCurrentUpdateState: git rev-parse failed; term={any}; stderr: {s}",
+            .{ res.term, res.stderr },
+        );
+        return "";
+    }
+
+    const head = std.mem.trim(u8, res.stdout, &std.ascii.whitespace);
+    return allocator.dupe(u8, head) catch "";
 }
 
 fn inferStaticData(allocator: std.mem.Allocator) !StaticData {
@@ -567,6 +613,7 @@ test "ndconfig: init existing" {
     try t.expectEqual(SysupdatesChannel.dev, conf.data.syschannel);
     try t.expectEqualStrings("/cron/sysupdates.sh", conf.data.syscronscript);
     try t.expectEqualStrings("/sysupdates/run.sh", conf.data.sysrunscript);
+    try t.expectEqualStrings("", conf.data.head);
 }
 
 test "ndconfig: init null" {
@@ -578,6 +625,7 @@ test "ndconfig: init null" {
     try t.expectEqual(SysupdatesChannel.disabled, conf.data.syschannel);
     try t.expectEqualStrings(SYSUPDATES_CRON_SCRIPT_PATH, conf.data.syscronscript);
     try t.expectEqualStrings(SYSUPDATES_RUN_SCRIPT_PATH, conf.data.sysrunscript);
+    try t.expectEqualStrings("", conf.data.head);
 }
 
 test "ndconfig: dump" {
@@ -611,6 +659,7 @@ test "ndconfig: dump" {
     try t.expectEqual(SysupdatesChannel.master, parsed.value.syschannel);
     try t.expectEqualStrings("cronscript.sh", parsed.value.syscronscript);
     try t.expectEqualStrings("runscript.sh", parsed.value.sysrunscript);
+    try t.expectEqualStrings("", parsed.value.head);
 }
 
 test "ndconfig: switch sysupdates and infer" {

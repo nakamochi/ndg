@@ -95,7 +95,9 @@ pub const MessageTag = enum(u16) {
     screen_unlock_result = 0x18,
     // ngui -> nd: set or disable screenlock pin code
     slock_set_pincode = 0x19,
-    // next: 0x1a
+    // ngui -> nd: request current settings
+    get_settings = 0x1a,
+    // next: 0x1b
 };
 
 /// daemon and gui exchange messages of this type.
@@ -124,6 +126,7 @@ pub const Message = union(MessageTag) {
     unlock_screen: []const u8, // pincode
     screen_unlock_result: ScreenUnlockResult,
     slock_set_pincode: ?[]const u8,
+    get_settings: void,
 
     pub const WifiConnect = struct {
         ssid: []const u8,
@@ -266,6 +269,7 @@ pub const Message = union(MessageTag) {
         sysupdates: struct {
             url: []const u8,
             channel: SysupdatesChan,
+            head: []const u8 = "", // git commit hash
         },
     };
 
@@ -308,6 +312,7 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !ParsedMessage {
             .poweroff => .{ .value = .{ .poweroff = {} } },
             .standby => .{ .value = .{ .standby = {} } },
             .wakeup => .{ .value = .{ .wakeup = {} } },
+            .get_settings => .{ .value = .{ .get_settings = {} } },
             else => Error.CommReadZeroLenInNonVoidTag,
         };
     }
@@ -319,6 +324,7 @@ pub fn read(allocator: mem.Allocator, reader: anytype) !ParsedMessage {
         .poweroff,
         .standby,
         .wakeup,
+        .get_settings,
         => unreachable, // handled above
         inline else => |t| {
             const bytes = try allocator.alloc(u8, len);
@@ -348,7 +354,7 @@ pub fn write(allocator: mem.Allocator, writer: anytype, msg: Message) !void {
     var data = types.ByteArrayList.init(allocator);
     defer data.deinit();
     switch (msg) {
-        .ping, .pong, .poweroff, .standby, .wakeup => {}, // zero length payload
+        .ping, .pong, .poweroff, .standby, .wakeup, .get_settings => {}, // zero length payload
         .wifi_connect => try json.stringify(msg.wifi_connect, .{}, data.writer()),
         .network_report => try json.stringify(msg.network_report, .{}, data.writer()),
         .get_network_report => try json.stringify(msg.get_network_report, .{}, data.writer()),
@@ -466,6 +472,7 @@ test "write/read void tags" {
         Message.poweroff,
         Message.standby,
         Message.wakeup,
+        Message.get_settings,
     };
 
     for (msg) |m| {

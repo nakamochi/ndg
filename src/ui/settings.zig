@@ -69,6 +69,7 @@ var tab: struct {
         switchbtn: lvgl.TextButton,
         currurl: lvgl.Label,
         currchan: lvgl.Label,
+        currhead: lvgl.Label,
     },
 } = undefined;
 
@@ -182,6 +183,8 @@ pub fn initSysupdatesPanel(cont: lvgl.Container) !lvgl.Card {
     left.setHeightToContent();
     tab.sysupdates.currchan = try lvgl.Label.new(left, cmark ++ "CURRENT CHANNEL:# unknown", .{ .recolor = true });
     tab.sysupdates.currchan.setHeightToContent();
+    tab.sysupdates.currhead = try lvgl.Label.new(left, cmark ++ "CURRENT HEAD:# unknown", .{ .recolor = true });
+    tab.sysupdates.currhead.setHeightToContent();
     const lab = try lvgl.Label.new(left, "edge channel may contain some experimental and unstable features.", .{});
     lab.setWidth(lvgl.sizePercent(100));
     lab.setHeightToContent();
@@ -216,6 +219,7 @@ pub fn update(sett: comm.Message.Settings) !void {
     var buf: [512]u8 = undefined;
     try tab.sysupdates.currurl.setTextFmt(&buf, cmark ++ "CURRENT SOURCE:# {s}", .{sett.sysupdates.url});
     try tab.sysupdates.currchan.setTextFmt(&buf, cmark ++ "CURRENT CHANNEL:# {s}", .{@tagName(sett.sysupdates.channel)});
+    try tab.sysupdates.currhead.setTextFmt(&buf, cmark ++ "CURRENT HEAD:# {s}", .{sett.sysupdates.head});
     state.curr_sysupdates_chan = sett.sysupdates.channel;
 
     // nodename
