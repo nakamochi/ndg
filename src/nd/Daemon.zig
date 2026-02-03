@@ -69,7 +69,8 @@ want_lnd_report: bool,
 lnd_timer: time.Timer,
 lnd_report_interval: u64 = 1 * time.ns_per_min,
 lnd_tls_reset_count: usize = 0,
-sysupdates_head: ?[]u8 = null,
+sysupdates_head_pulled: ?[]u8 = null,
+sysupdates_head_applied: ?[]u8 = null,
 next_head_refresh_ns: i128 = 0,
 
 // TODO: move this to a sys.ServiceList
@@ -167,10 +168,11 @@ pub fn init(opt: InitOpt) !Daemon {
         .want_lnd_report = true,
         .lnd_timer = try time.Timer.start(),
         .next_head_refresh_ns = 0,
-        .sysupdates_head = null,
+        .sysupdates_head_pulled = null,
+        .sysupdates_head_applied = null,
     };
 
-    d.refreshSysupdatesHead();
+    d.refreshSysupdatesHeads();
     return d;
 }
 
@@ -179,9 +181,8 @@ pub fn init(opt: InitOpt) !Daemon {
 pub fn deinit(self: *Daemon) void {
     self.wpa_ctrl.close() catch |err| logger.err("deinit: wpa_ctrl.close: {any}", .{err});
     self.services.deinit(self.allocator);
-    if (self.sysupdates_head) |head| {
-        self.allocator.free(head);
-    }
+    if (self.sysupdates_head_pulled) |h| self.allocator.free(h);
+    if (self.sysupdates_head_applied) |h| self.allocator.free(h);
 }
 
 /// start launches daemon threads and returns immediately.
@@ -363,13 +364,14 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
     }
     self.mu.unlock();
 
-    if (do_refresh) self.refreshSysupdatesHead();
+    if (do_refresh) self.refreshSysupdatesHeads();
 
     self.mu.lock();
     defer self.mu.unlock();
-
     if (self.want_settings) {
-        const head_override: ?[]const u8 = self.sysupdates_head;
+        // Snapshot daemon runtime state under daemon lock
+        const pulled_opt: ?[]const u8 = self.sysupdates_head_pulled;
+        const applied_opt: ?[]const u8 = self.sysupdates_head_applied;
 
         const msg_opt = self.conf.safeReadOnly(struct {
             fn f(conf: Config.Data, static: Config.StaticData) ?comm.Message.Settings {
@@ -383,7 +385,11 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
                             .master => .stable,
                             .disabled => .disabled,
                         },
-                        .head = conf.head, // temporary; caller may override
+
+                        // temporary placeholders; patched by caller
+                        .head_pulled = conf.head,
+                        .head_applied = "",
+                        .head_mismatch = false,
                     },
                 };
             }
@@ -391,7 +397,22 @@ fn mainThreadLoopCycle(self: *Daemon) !void {
 
         if (msg_opt) |msg_const| {
             var msg = msg_const;
-            msg.sysupdates.head = if (head_override) |h| h else msg.sysupdates.head;
+
+            // Choose final values
+            const pulled: []const u8 =
+                if (pulled_opt) |h| h else msg.sysupdates.head_pulled;
+
+            const applied: []const u8 =
+                if (applied_opt) |h| h else "";
+
+            const mismatch =
+                applied.len != 0 and
+                pulled.len != 0 and
+                !std.mem.eql(u8, applied, pulled);
+
+            msg.sysupdates.head_pulled = pulled;
+            msg.sysupdates.head_applied = applied;
+            msg.sysupdates.head_mismatch = mismatch;
 
             var ok = true;
             comm.pipeWrite(.{ .settings = msg }) catch |err| {
@@ -573,7 +594,7 @@ fn commThreadLoop(self: *Daemon) void {
                 self.unlockScreen(pincode) catch |err| logger.err("unlockScreen: {!}", .{err});
             },
             .get_settings => {
-                self.refreshSysupdatesHead();
+                self.refreshSysupdatesHeads();
                 self.mu.lock();
                 self.want_settings = true;
                 self.mu.unlock();
@@ -1363,22 +1384,71 @@ fn readGitHeadOwned(self: *Daemon) ?[]u8 {
     return self.allocator.dupe(u8, head) catch null;
 }
 
-fn refreshSysupdatesHead(self: *Daemon) void {
-    const new = self.readGitHeadOwned() orelse return;
+fn readAppliedHeadOwned(self: *Daemon) ?[]u8 {
+    const bytes = std.fs.cwd().readFileAlloc(self.allocator, Config.SYSUPDATES_APPLIED_HASH_PATH, 128) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => {
+            logger.debug("readAppliedHeadOwned: readFileAlloc failed: {any}", .{err});
+            return null;
+        },
+    };
+    defer self.allocator.free(bytes);
+
+    const trimmed = std.mem.trim(u8, bytes, &std.ascii.whitespace);
+    if (trimmed.len == 0) return null;
+
+    return self.allocator.dupe(u8, trimmed) catch null;
+}
+
+fn refreshSysupdatesHeads(self: *Daemon) void {
+    // Pulled (git)
+    const new_pulled = self.readGitHeadOwned();
+
+    // Applied (/etc/sysupdates-applied)
+    const new_applied = self.readAppliedHeadOwned();
 
     self.mu.lock();
     defer self.mu.unlock();
 
-    if (self.sysupdates_head) |old| {
-        if (std.mem.eql(u8, old, new)) {
-            self.allocator.free(new);
-            return;
+    var changed = false;
+
+    // Update pulled
+    if (new_pulled) |np| {
+        if (self.sysupdates_head_pulled) |old| {
+            if (!std.mem.eql(u8, old, np)) {
+                logger.info("sysupdates pulled HEAD changed {s} -> {s}", .{ old, np });
+                self.allocator.free(old);
+                self.sysupdates_head_pulled = np;
+                changed = true;
+            } else {
+                self.allocator.free(np);
+            }
+        } else {
+            logger.info("sysupdates pulled HEAD initialized to {s}", .{np});
+            self.sysupdates_head_pulled = np;
+            changed = true;
         }
-        logger.info("sysupdates head changed: {s} -> {s}", .{ old, new });
-        self.allocator.free(old);
     }
-    self.sysupdates_head = new;
-    self.want_settings = true;
+
+    // Update applied
+    if (new_applied) |na| {
+        if (self.sysupdates_head_applied) |old| {
+            if (!std.mem.eql(u8, old, na)) {
+                logger.info("sysupdates applied HEAD changed {s} -> {s}", .{ old, na });
+                self.allocator.free(old);
+                self.sysupdates_head_applied = na;
+                changed = true;
+            } else {
+                self.allocator.free(na);
+            }
+        } else {
+            logger.info("sysupdates applied HEAD initialized to {s}", .{na});
+            self.sysupdates_head_applied = na;
+            changed = true;
+        }
+    }
+
+    if (changed) self.want_settings = true;
 }
 
 test "daemon: start-stop" {

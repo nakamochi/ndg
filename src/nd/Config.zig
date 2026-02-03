@@ -15,6 +15,8 @@ const SYSUPDATES_RUN_SCRIPT_NAME = "update.sh";
 pub const SYSUPDATES_LOCAL_REPO_PATH = "/ssd/sysupdates";
 const SYSUPDATES_RUN_SCRIPT_PATH = SYSUPDATES_LOCAL_REPO_PATH ++ "/" ++ SYSUPDATES_RUN_SCRIPT_NAME;
 const SYSUPDATES_DEFAULT_URL = "https://github.com/nakamochi/sysupdates.git";
+/// written by sysupdates update.sh with the last successfully applied commit hash
+pub const SYSUPDATES_APPLIED_HASH_PATH = "/etc/sysupdates-applied";
 
 /// must be the same as https://github.com/nakamochi/sysupdates/tree/master/lnd
 pub const LND_OS_USER = "lnd";

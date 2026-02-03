@@ -269,7 +269,9 @@ pub const Message = union(MessageTag) {
         sysupdates: struct {
             url: []const u8,
             channel: SysupdatesChan,
-            head: []const u8 = "", // git commit hash
+            head_pulled: []const u8 = "", // "pulled" = current repo HEAD after git pull
+            head_applied: []const u8 = "", // "applied" = last successfully applied update (/etc/sysupdates-applied)
+            head_mismatch: bool = false, // true when both are present and differ
         },
     };
 

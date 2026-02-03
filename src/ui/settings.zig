@@ -219,7 +219,25 @@ pub fn update(sett: comm.Message.Settings) !void {
     var buf: [512]u8 = undefined;
     try tab.sysupdates.currurl.setTextFmt(&buf, cmark ++ "CURRENT SOURCE:# {s}", .{sett.sysupdates.url});
     try tab.sysupdates.currchan.setTextFmt(&buf, cmark ++ "CURRENT CHANNEL:# {s}", .{@tagName(sett.sysupdates.channel)});
-    try tab.sysupdates.currhead.setTextFmt(&buf, cmark ++ "CURRENT HEAD:# {s}", .{sett.sysupdates.head});
+    const mark: []const u8 = if (sett.sysupdates.head_mismatch) "#ff4444 " else cmark;
+    const pulled = sett.sysupdates.head_pulled;
+    const applied = sett.sysupdates.head_applied;
+    if (sett.sysupdates.head_mismatch) {
+        try tab.sysupdates.currhead.setTextFmt(
+            &buf,
+            "{s}CURRENT HEAD:# {s} ({s})",
+            .{ mark, applied, pulled },
+        );
+    } else {
+        const one = if (applied.len != 0) applied else pulled;
+        const display_head = if (one.len == 0) "unknown" else one;
+        try tab.sysupdates.currhead.setTextFmt(
+            &buf,
+            "{s}CURRENT HEAD:# {s}",
+            .{ mark, display_head },
+        );
+    }
+
     state.curr_sysupdates_chan = sett.sysupdates.channel;
 
     // nodename
