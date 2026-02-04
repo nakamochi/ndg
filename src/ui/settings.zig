@@ -82,6 +82,8 @@ var state: struct {
     slock_pin_input1: ?[]const u8 = null, // verified against a second time input
     // sysupdates channel
     curr_sysupdates_chan: ?comm.Message.SysupdatesChan = null,
+    sysupdates_switch_inprogress: bool = false,
+    sysupdates_target_chan: ?comm.Message.SysupdatesChan = null,
 } = .{};
 
 /// creates a settings panel allowing to change hostname and lnd alias,
@@ -240,6 +242,31 @@ pub fn update(sett: comm.Message.Settings) !void {
 
     state.curr_sysupdates_chan = sett.sysupdates.channel;
 
+    // If a sysupdates switch is in progress, keep spinner until daemon confirms the target channel.
+    if (state.sysupdates_switch_inprogress) {
+        if (state.sysupdates_target_chan) |target| {
+            if (sett.sysupdates.channel == target) {
+                // Switch confirmed by daemon -> return UI to steady state.
+                state.sysupdates_switch_inprogress = false;
+                state.sysupdates_target_chan = null;
+
+                tab.sysupdates.card.spin(.off);
+                tab.sysupdates.chansel.enable();
+                tab.sysupdates.switchbtn.label.setTextStatic(textSwitch);
+
+                // Hide selected value & require an explicit new selection to enable SWITCH again.
+                tab.sysupdates.chansel.setText("");
+                tab.sysupdates.switchbtn.disable();
+            } else {
+                // Still waiting -> keep UI locked/spinning.
+                tab.sysupdates.card.spin(.on);
+                tab.sysupdates.chansel.disable();
+                tab.sysupdates.switchbtn.disable();
+                tab.sysupdates.switchbtn.label.setTextStatic("UPDATING ...");
+            }
+        }
+    }
+
     // nodename
     state.curr_nodename.set(sett.hostname);
     try tab.nodename.currname.setTextFmt(&buf, cmark ++ "CURRENT NAME:# {s}", .{state.curr_nodename.val()});
@@ -387,12 +414,17 @@ export fn nm_sysupdates_switch_click(_: *lvgl.LvEvent) void {
 fn switchSysupdates(name: []const u8) !void {
     const chan = std.meta.stringToEnum(comm.Message.SysupdatesChan, name) orelse return error.InvalidSysupdateChannel;
     logger.debug("switching sysupdates to channel {}", .{chan});
+    state.sysupdates_switch_inprogress = true;
+    state.sysupdates_target_chan = chan;
 
     tab.sysupdates.switchbtn.disable();
     tab.sysupdates.switchbtn.label.setTextStatic("UPDATING ...");
     tab.sysupdates.chansel.disable();
     tab.sysupdates.card.spin(.on);
     errdefer {
+        state.sysupdates_switch_inprogress = false;
+        state.sysupdates_target_chan = null;
+
         tab.sysupdates.card.spin(.off);
         tab.sysupdates.chansel.enable();
         tab.sysupdates.switchbtn.enable();
