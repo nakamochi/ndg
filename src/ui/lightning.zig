@@ -2,6 +2,7 @@
 //! all functions assume LVGL is init'ed and ui mutex is locked on entry.
 
 const std = @import("std");
+const ascii = std.ascii;
 
 const comm = @import("../comm.zig");
 const lvgl = @import("lvgl.zig");
@@ -88,6 +89,7 @@ var tab: struct {
         topwin: lvgl.Window,
         arena: *std.heap.ArenaAllocator, // all non-UI elements are alloc'ed here
         mnemonic: ?types.StringList = null, // 24 words genseed result
+        restore_input: ?lvgl.TextArea = null, // restore-from-seed UI bits (optional)
         pairing: ?struct {
             // app_description key to connection URL.
             // keys are static, values are heap-alloc'ed in `setupPairing`.
@@ -183,9 +185,13 @@ pub fn initTabPanel(allocator: std.mem.Allocator, cont: lvgl.Container) !void {
         tab.nowallet.resizeToMax();
         tab.nowallet.setPad(10, .row, .{});
         _ = try lvgl.Label.new(tab.nowallet, "lightning wallet is uninitialized.\ntap the button to start the setup process.", .{});
-        const btn = try lvgl.TextButton.new(tab.nowallet, "SETUP NEW WALLET");
-        btn.setWidth(lvgl.sizePercent(50));
-        _ = btn.on(.click, nm_lnd_setup_click, null);
+        const btn_new = try lvgl.TextButton.new(tab.nowallet, "SETUP NEW WALLET");
+        btn_new.setWidth(lvgl.sizePercent(60));
+        _ = btn_new.on(.click, nm_lnd_setup_click, null);
+
+        const btn_restore = try lvgl.TextButton.new(tab.nowallet, "RESTORE FROM SEED");
+        btn_restore.setWidth(lvgl.sizePercent(60));
+        _ = btn_restore.on(.click, nm_lnd_restore_click, null);
     }
 
     // locked wallet state
@@ -305,6 +311,10 @@ export fn nm_lnd_setup_click(_: *lvgl.LvEvent) void {
     startSeedSetup() catch |err| logger.err("startSeedSetup: {any}", .{err});
 }
 
+export fn nm_lnd_restore_click(_: *lvgl.LvEvent) void {
+    startRestoreSetup() catch |err| logger.err("startRestoreSetup: {any}", .{err});
+}
+
 export fn nm_lnd_pair_click(_: *lvgl.LvEvent) void {
     startPairing() catch |err| logger.err("startPairing: {any}", .{err});
 }
@@ -325,6 +335,55 @@ fn startSeedSetup() !void {
     _ = try lvgl.Spinner.new(wincont);
     _ = try lvgl.Label.new(wincont, "GENERATING SEED ...", .{});
     try comm.pipeWrite(.lightning_genseed);
+}
+
+fn startRestoreSetup() !void {
+    const win = try lvgl.Window.newTop(60, " " ++ symbol.LightningBolt ++ " RESTORE FROM SEED");
+    try tab.initSetup(win);
+    errdefer tab.destroySetup(); // TODO: display an error instead
+
+    const wincont = win.content().flex(.column, .{});
+
+    _ = try lvgl.Label.new(wincont,
+        \\enter the 24-word mnemonic seed below, separated by spaces.
+        \\the seed is case-insensitive, and words may be separated
+        \\by multiple spaces/newlines.
+    , .{});
+
+    var ta = try lvgl.TextArea.new(wincont, .{ .oneline = false });
+    ta.setWidth(lvgl.sizePercent(100));
+    ta.setHeight(lvgl.sizePercent(55));
+    ta.setPlaceholderText("word1 word2 ... word24");
+    _ = ta.on(.all, nm_lnd_restore_input_event, null);
+    tab.seed_setup.?.restore_input = ta;
+
+    const btnrow = try lvgl.FlexLayout.new(wincont, .row, .{
+        .width = lvgl.sizePercent(100),
+        .height = .content,
+        .main = .space_between,
+    });
+
+    const cancel_btn = try lvgl.TextButton.new(btnrow, "CANCEL");
+    cancel_btn.setWidth(lvgl.sizePercent(30));
+    cancel_btn.addStyle(lvgl.nm_style_btn_red(), .{});
+    _ = cancel_btn.on(.click, nm_lnd_setup_finish, null);
+
+    const proceed_btn = try lvgl.TextButton.new(btnrow, "PROCEED " ++ symbol.Right);
+    proceed_btn.setWidth(lvgl.sizePercent(30));
+    _ = proceed_btn.on(.click, nm_lnd_restore_proceed, null);
+}
+
+export fn nm_lnd_restore_input_event(e: *lvgl.LvEvent) callconv(.C) void {
+    const code = e.code();
+    if (code == .click or code == .press or code == .focus) {
+        if (tab.seed_setup) |ss| if (ss.restore_input) |ta| widget.keyboardOn(ta);
+    } else if (code == .defocus or code == .ready or code == .cancel) {
+        widget.keyboardOff();
+    }
+}
+
+export fn nm_lnd_restore_proceed(_: *lvgl.LvEvent) void {
+    restoreProceed() catch |err| logger.err("restoreProceed: {any}", .{err});
 }
 
 /// similar to `startSeedSetup` but used when seed is already setup,
@@ -394,6 +453,60 @@ fn confirmSetupSeed(mnemonic: []const []const u8) !void {
 
 export fn nm_lnd_setup_commit_seed(_: *lvgl.LvEvent) void {
     setupCommitSeed() catch |err| logger.err("setupCommitSeed: {any}", .{err});
+}
+
+fn restoreProceed() !void {
+    errdefer tab.destroySetup(); // TODO: display an error instead
+    if (tab.seed_setup == null) return error.LightningSetupInactive;
+    const ss = &tab.seed_setup.?;
+    if (ss.restore_input == null) return error.LightningSetupInactive;
+
+    const raw = ss.restore_input.?.text(); // expected: []const u8
+
+    // Tokenize by any whitespace; ignore multiple spaces/newlines/tabs.
+    var it = std.mem.tokenizeAny(u8, raw, " \t\r\n");
+
+    // Collect up to 24 words.
+    var words: [24][]const u8 = undefined;
+    var n: usize = 0;
+    while (it.next()) |w| {
+        if (n >= 24) {
+            try showRestoreError("too many words: expected 24.");
+            return;
+        }
+        words[n] = w;
+        n += 1;
+    }
+    if (n != 24) {
+        try showRestoreError("invalid seed length: expected 24 words.");
+        return;
+    }
+
+    const alloc = ss.arena.allocator();
+    var normalized = try alloc.alloc([]const u8, 24);
+    for (words, 0..) |w, i| {
+        var tmp = try alloc.alloc(u8, w.len);
+        for (w, 0..) |ch, j| tmp[j] = ascii.toLower(ch);
+        normalized[i] = tmp;
+    }
+
+    ss.mnemonic = try types.StringList.fromUnowned(alloc, normalized);
+
+    widget.keyboardOff();
+    try setupCommitSeed();
+}
+
+fn showRestoreError(msg: [*:0]const u8) !void {
+    // Reuse modal helper for a simple “OK”.
+    const ok: [*:0]const u8 = "OK";
+    widget.modal(" " ++ symbol.Warning ++ " INVALID SEED", msg, &.{ok}, restoreErrModalCallback) catch |err| {
+        logger.err("showRestoreError: modal: {any}", .{err});
+    };
+}
+
+fn restoreErrModalCallback(_: usize) align(@alignOf(widget.ModalButtonCallbackFn)) void {
+    // nothing; modal close already handled in widget.modal callback path
+    preserve_main_active_tab();
 }
 
 fn setupCommitSeed() !void {
