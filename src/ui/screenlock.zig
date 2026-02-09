@@ -69,7 +69,7 @@ pub fn unlockSuccess() void {
     is_active = false;
 }
 
-export fn nm_pincode_input(e: *lvgl.LvEvent) void {
+export fn nm_pincode_input(e: *lvgl.LvEvent) callconv(.C) void {
     switch (e.code()) {
         .ready => {
             keyboard.hide();

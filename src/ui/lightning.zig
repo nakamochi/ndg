@@ -307,23 +307,23 @@ pub fn updateTabPanel(msg: comm.Message) !void {
     };
 }
 
-export fn nm_lnd_setup_click(_: *lvgl.LvEvent) void {
+export fn nm_lnd_setup_click(_: *lvgl.LvEvent) callconv(.C) void {
     startSeedSetup() catch |err| logger.err("startSeedSetup: {any}", .{err});
 }
 
-export fn nm_lnd_restore_click(_: *lvgl.LvEvent) void {
+export fn nm_lnd_restore_click(_: *lvgl.LvEvent) callconv(.C) void {
     startRestoreSetup() catch |err| logger.err("startRestoreSetup: {any}", .{err});
 }
 
-export fn nm_lnd_pair_click(_: *lvgl.LvEvent) void {
+export fn nm_lnd_pair_click(_: *lvgl.LvEvent) callconv(.C) void {
     startPairing() catch |err| logger.err("startPairing: {any}", .{err});
 }
 
-export fn nm_lnd_reset_click(_: *lvgl.LvEvent) void {
+export fn nm_lnd_reset_click(_: *lvgl.LvEvent) callconv(.C) void {
     promptNodeReset() catch |err| logger.err("resetNode: {any}", .{err});
 }
 
-export fn nm_lnd_setup_finish(_: *lvgl.LvEvent) void {
+export fn nm_lnd_setup_finish(_: *lvgl.LvEvent) callconv(.C) void {
     tab.destroySetup();
 }
 
@@ -382,7 +382,7 @@ export fn nm_lnd_restore_input_event(e: *lvgl.LvEvent) callconv(.C) void {
     }
 }
 
-export fn nm_lnd_restore_proceed(_: *lvgl.LvEvent) void {
+export fn nm_lnd_restore_proceed(_: *lvgl.LvEvent) callconv(.C) void {
     restoreProceed() catch |err| logger.err("restoreProceed: {any}", .{err});
 }
 
@@ -451,7 +451,7 @@ fn confirmSetupSeed(mnemonic: []const []const u8) !void {
     _ = proceed_btn.on(.click, nm_lnd_setup_commit_seed, null);
 }
 
-export fn nm_lnd_setup_commit_seed(_: *lvgl.LvEvent) void {
+export fn nm_lnd_setup_commit_seed(_: *lvgl.LvEvent) callconv(.C) void {
     setupCommitSeed() catch |err| logger.err("setupCommitSeed: {any}", .{err});
 }
 
@@ -586,7 +586,7 @@ fn setupPairing(conn: comm.Message.LightningCtrlConn) !void {
     updatePairingApp();
 }
 
-export fn nm_lnd_setup_appsel_changed(_: *lvgl.LvEvent) void {
+export fn nm_lnd_setup_appsel_changed(_: *lvgl.LvEvent) callconv(.C) void {
     updatePairingApp();
 }
 

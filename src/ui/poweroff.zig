@@ -14,7 +14,7 @@ const logger = std.log.scoped(.ui);
 extern fn nm_sys_shutdown() void;
 
 /// called when "power off" button is pressed.
-export fn nm_poweroff_btn_callback(_: *lvgl.LvEvent) void {
+export fn nm_poweroff_btn_callback(_: *lvgl.LvEvent) callconv(.C) void {
     const proceed: [*:0]const u8 = "PROCEED";
     const abort: [*:0]const u8 = "CANCEL";
     const title = " " ++ symbol.Power ++ " SHUTDOWN";

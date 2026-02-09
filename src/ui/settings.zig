@@ -304,7 +304,7 @@ pub fn update(sett: comm.Message.Settings) !void {
     }
 }
 
-export fn nm_nodename_textarea_input(e: *lvgl.LvEvent) void {
+export fn nm_nodename_textarea_input(e: *lvgl.LvEvent) callconv(.C) void {
     switch (e.code()) {
         .focus => widget.keyboardOn(tab.nodename.textarea),
         .defocus, .ready, .cancel => widget.keyboardOff(),
@@ -321,7 +321,7 @@ export fn nm_nodename_textarea_input(e: *lvgl.LvEvent) void {
     }
 }
 
-export fn nm_nodename_change_btn_click(_: *lvgl.LvEvent) void {
+export fn nm_nodename_change_btn_click(_: *lvgl.LvEvent) callconv(.C) void {
     const newname = tab.nodename.textarea.text();
     comm.pipeWrite(.{ .set_nodename = newname }) catch |err| {
         logger.err("nodename change pipe write: {!}", .{err});
@@ -333,13 +333,13 @@ export fn nm_nodename_change_btn_click(_: *lvgl.LvEvent) void {
     tab.nodename.card.spin(.on);
 }
 
-export fn nm_screenlock_enbtn_click(_: *lvgl.LvEvent) void {
+export fn nm_screenlock_enbtn_click(_: *lvgl.LvEvent) callconv(.C) void {
     tab.screenlock.beginSetPin() catch |err| {
         logger.err("screenlock.beginSetPin: {!}", .{err});
     };
 }
 
-export fn nm_screenlock_pincode_input(_: *lvgl.LvEvent) void {
+export fn nm_screenlock_pincode_input(_: *lvgl.LvEvent) callconv(.C) void {
     // first time input; prompt user for second input to verify
     if (state.slock_pin_input1 == null) {
         state.slock_pin_input1 = allocator.dupe(u8, tab.screenlock.setpin_input.text()) catch |err| {
@@ -377,7 +377,7 @@ export fn nm_screenlock_pincode_input(_: *lvgl.LvEvent) void {
     };
 }
 
-export fn nm_screenlock_disbtn_click(_: *lvgl.LvEvent) void {
+export fn nm_screenlock_disbtn_click(_: *lvgl.LvEvent) callconv(.C) void {
     tab.screenlock.card.spin(.on);
     tab.screenlock.disbtn.disable();
     comm.pipeWrite(.{ .slock_set_pincode = null }) catch |err| {
@@ -387,7 +387,7 @@ export fn nm_screenlock_disbtn_click(_: *lvgl.LvEvent) void {
     };
 }
 
-export fn nm_sysupdates_chansel_changed(_: *lvgl.LvEvent) void {
+export fn nm_sysupdates_chansel_changed(_: *lvgl.LvEvent) callconv(.C) void {
     var buf = [_]u8{0} ** 32;
     const name = tab.sysupdates.chansel.getSelectedStr(&buf);
     const chan = std.meta.stringToEnum(comm.Message.SysupdatesChan, name) orelse return;
@@ -405,7 +405,7 @@ export fn nm_sysupdates_chansel_changed(_: *lvgl.LvEvent) void {
     }
 }
 
-export fn nm_sysupdates_switch_click(_: *lvgl.LvEvent) void {
+export fn nm_sysupdates_switch_click(_: *lvgl.LvEvent) callconv(.C) void {
     var buf = [_]u8{0} ** 32;
     const name = tab.sysupdates.chansel.getSelectedStr(&buf);
     switchSysupdates(name) catch |err| logger.err("switchSysupdates: {any}", .{err});
