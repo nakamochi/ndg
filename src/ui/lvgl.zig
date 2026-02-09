@@ -31,7 +31,7 @@ fn lvglInit() void {
 }
 
 /// logs messages from LVGL logging facilities; always with the same std.log level .info.
-export fn nm_lvgl_log(msg: [*:0]const u8) void {
+export fn nm_lvgl_log(msg: [*:0]const u8) callconv(.C) void {
     const s = std.mem.span(msg);
     // info level log messages are by default printed only in Debug
     // and ReleaseSafe build modes.

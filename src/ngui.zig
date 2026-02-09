@@ -109,7 +109,7 @@ var tick_timer: types.Timer = undefined;
 
 /// reports elapsed time in ms since the program start, overflowing at u32 max.
 /// it is defined as LVGL custom tick.
-export fn nm_get_curr_tick() u32 {
+export fn nm_get_curr_tick() callconv(.C) u32 {
     const ms = tick_timer.read() / time.ns_per_ms;
     const over = ms >> 32;
     if (over > 0) {
@@ -118,7 +118,7 @@ export fn nm_get_curr_tick() u32 {
     return @truncate(ms);
 }
 
-export fn nm_check_idle_time(_: *lvgl.LvTimer) void {
+export fn nm_check_idle_time(_: *lvgl.LvTimer) callconv(.C) void {
     const standby_idle_ms = 60000; // 60sec
     const idle_ms = lvgl.idleTime();
     if (idle_ms < standby_idle_ms) {
@@ -132,14 +132,14 @@ export fn nm_check_idle_time(_: *lvgl.LvTimer) void {
 
 /// tells the daemon to initiate system shutdown leading to power off.
 /// once all's done, the daemon will send a SIGTERM back to ngui.
-export fn nm_sys_shutdown() void {
+export fn nm_sys_shutdown() callconv(.C) void {
     const msg = comm.Message.poweroff;
     comm.pipeWrite(msg) catch |err| logger.err("nm_sys_shutdown: {any}", .{err});
     state = .alert; // prevent screen sleep
     wakeup.set(); // wake up from standby, if any
 }
 
-export fn nm_tab_settings_active() void {
+export fn nm_tab_settings_active() callconv(.C) void {
     logger.info("starting wifi scan", .{});
     // Force nd to refresh settings (incl sysupdates HEAD) on entering the settings tab.
     comm.pipeWrite(comm.Message{ .get_settings = {} }) catch |err|
@@ -149,14 +149,14 @@ export fn nm_tab_settings_active() void {
         logger.err("nm_tab_settings_active: {any}", .{err});
 }
 
-export fn nm_request_network_status(t: *lvgl.LvTimer) void {
+export fn nm_request_network_status(t: *lvgl.LvTimer) callconv(.C) void {
     t.destroy();
     const msg: comm.Message = .{ .get_network_report = .{ .scan = false } };
     comm.pipeWrite(msg) catch |err| logger.err("nm_request_network_status: {any}", .{err});
 }
 
 /// ssid and password args must not outlive this function.
-export fn nm_wifi_start_connect(ssid: [*:0]const u8, password: [*:0]const u8) void {
+export fn nm_wifi_start_connect(ssid: [*:0]const u8, password: [*:0]const u8) callconv(.C) void {
     const msg = comm.Message{ .wifi_connect = .{
         .ssid = std.mem.span(ssid),
         .password = std.mem.span(password),

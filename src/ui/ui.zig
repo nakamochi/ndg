@@ -53,7 +53,7 @@ pub fn init(opt: InitOpt) !void {
     }
 }
 
-export fn nm_create_info_panel(parent: *lvgl.LvObj) c_int {
+export fn nm_create_info_panel(parent: *lvgl.LvObj) callconv(.C) c_int {
     createInfoPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
         logger.err("createInfoPanel: {any}", .{err});
         return -1;
@@ -61,7 +61,7 @@ export fn nm_create_info_panel(parent: *lvgl.LvObj) c_int {
     return 0;
 }
 
-export fn nm_create_bitcoin_panel(parent: *lvgl.LvObj) c_int {
+export fn nm_create_bitcoin_panel(parent: *lvgl.LvObj) callconv(.C) c_int {
     bitcoin.initTabPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
         logger.err("createBitcoinPanel: {any}", .{err});
         return -1;
@@ -69,7 +69,7 @@ export fn nm_create_bitcoin_panel(parent: *lvgl.LvObj) c_int {
     return 0;
 }
 
-export fn nm_create_lightning_panel(parent: *lvgl.LvObj) c_int {
+export fn nm_create_lightning_panel(parent: *lvgl.LvObj) callconv(.C) c_int {
     lightning.initTabPanel(allocator, lvgl.Container{ .lvobj = parent }) catch |err| {
         logger.err("createLightningPanel: {any}", .{err});
         return -1;
@@ -77,7 +77,7 @@ export fn nm_create_lightning_panel(parent: *lvgl.LvObj) c_int {
     return 0;
 }
 
-export fn nm_create_settings_nodename(parent: *lvgl.LvObj) ?*lvgl.LvObj {
+export fn nm_create_settings_nodename(parent: *lvgl.LvObj) callconv(.C) ?*lvgl.LvObj {
     const card = settings.initNodenamePanel(lvgl.Container{ .lvobj = parent }) catch |err| {
         logger.err("initNodenamePanel: {any}", .{err});
         return null;
@@ -85,7 +85,7 @@ export fn nm_create_settings_nodename(parent: *lvgl.LvObj) ?*lvgl.LvObj {
     return card.lvobj;
 }
 
-export fn nm_create_settings_screenlock(parent: *lvgl.LvObj) ?*lvgl.LvObj {
+export fn nm_create_settings_screenlock(parent: *lvgl.LvObj) callconv(.C) ?*lvgl.LvObj {
     const card = settings.initScreenlockPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
         logger.err("initScreenlockPanel: {any}", .{err});
         return null;
@@ -93,7 +93,7 @@ export fn nm_create_settings_screenlock(parent: *lvgl.LvObj) ?*lvgl.LvObj {
     return card.lvobj;
 }
 
-export fn nm_create_settings_sysupdates(parent: *lvgl.LvObj) ?*lvgl.LvObj {
+export fn nm_create_settings_sysupdates(parent: *lvgl.LvObj) callconv(.C) ?*lvgl.LvObj {
     const card = settings.initSysupdatesPanel(lvgl.Container{ .lvobj = parent }) catch |err| {
         logger.err("initSysupdatesPanel: {any}", .{err});
         return null;

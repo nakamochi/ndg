@@ -98,7 +98,7 @@ pub fn modal(title: [*:0]const u8, text: [*:0]const u8, btns: []const [*:0]const
     _ = btncont.on(.click, nm_modal_callback, win.lvobj);
 }
 
-export fn nm_modal_callback(e: *lvgl.LvEvent) void {
+export fn nm_modal_callback(e: *lvgl.LvEvent) callconv(.C) void {
     if (e.userdata()) |edata| {
         const target = lvgl.Container{ .lvobj = e.target() }; // type doesn't really matter
         if (!target.hasFlag(.user1)) { // .user1 is set in modal setup
