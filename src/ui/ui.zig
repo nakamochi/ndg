@@ -32,6 +32,7 @@ pub const InitOpt = struct {
 pub fn init(opt: InitOpt) !void {
     allocator = opt.allocator;
     settings.allocator = opt.allocator;
+    widget.allocator = opt.allocator;
     lvgl.init();
     const disp = try drv.initDisplay();
     drv.initInput() catch |err| {
