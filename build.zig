@@ -30,6 +30,39 @@ pub fn build(b: *std.Build) void {
         b.fmt("-ffile-prefix-map={s}/=/", .{b.pathFromRoot("")}),
     };
 
+    // ---------------------------------------------------------------------
+    // LVGL configuration headers
+    const use_sdl: bool = drv == .sdl2;
+    const use_x11: bool = drv == .x11;
+    const use_fbdev: bool = drv == .fbev;
+    const use_evdev: bool = drv == .fbev;
+
+    const lv_conf = b.addConfigHeader(
+        .{
+            .style = .{ .cmake = .{ .path = "src/ui/c/lv_conf.h.in" } },
+            .include_path = "lv_conf.h",
+        },
+        .{
+            // string-like macro value, e.g. LV_LOG_LEVEL_WARN
+            .LV_LOG_LEVEL = lvgl_loglevel.text(),
+        },
+    );
+
+    const lv_drv_conf = b.addConfigHeader(
+        .{
+            .style = .{ .cmake = .{ .path = "src/ui/c/lv_drv_conf.h.in" } },
+            .include_path = "lv_drv_conf.h",
+        },
+        .{
+            .SDL_HOR_RES = disp_horiz,
+            .SDL_VER_RES = disp_vert,
+            .USE_SDL = @intFromBool(use_sdl),
+            .USE_X11 = @intFromBool(use_x11),
+            .USE_FBDEV = @intFromBool(use_fbdev),
+            .USE_EVDEV = @intFromBool(use_evdev),
+        },
+    );
+
     // gui build
     const ngui = b.addExecutable(.{
         .name = "ngui",
@@ -41,6 +74,14 @@ pub fn build(b: *std.Build) void {
     });
     ngui.pie = true;
     ngui.root_module.addImport("build_options", buildopts_mod);
+
+    // Make generated LVGL headers available to both Zig's @cImport and to
+    // compiled C translation units.
+    ngui.root_module.addConfigHeader(lv_conf);
+    ngui.root_module.addConfigHeader(lv_drv_conf);
+    ngui.addConfigHeader(lv_conf);
+    ngui.addConfigHeader(lv_drv_conf);
+
     ngui.addIncludePath(b.path("lib"));
     ngui.addIncludePath(b.path("src/ui/c"));
 
@@ -72,7 +113,6 @@ pub fn build(b: *std.Build) void {
     ngui.root_module.addCMacro("NM_DISP_HOR", b.fmt("{d}", .{disp_horiz}));
     ngui.root_module.addCMacro("NM_DISP_VER", b.fmt("{d}", .{disp_vert}));
     ngui.defineCMacro("LV_CONF_INCLUDE_SIMPLE", "1");
-    ngui.defineCMacro("LV_LOG_LEVEL", lvgl_loglevel.text());
     ngui.defineCMacro("LV_TICK_CUSTOM", "1");
     ngui.defineCMacro("LV_TICK_CUSTOM_INCLUDE", "\"lv_custom_tick.h\"");
     ngui.defineCMacro("LV_TICK_CUSTOM_SYS_TIME_EXPR", "(nm_get_curr_tick())");
@@ -80,7 +120,6 @@ pub fn build(b: *std.Build) void {
         .sdl2 => {
             ngui.addCSourceFiles(.{ .files = lvgl_sdl2_src, .flags = &lvgl_flags });
             ngui.addCSourceFile(.{ .file = b.path("src/ui/c/drv_sdl2.c"), .flags = &ngui_cflags });
-            ngui.defineCMacro("USE_SDL", "1");
             ngui.linkSystemLibrary("SDL2");
         },
         .x11 => {
@@ -92,14 +131,11 @@ pub fn build(b: *std.Build) void {
                 },
                 .flags = &ngui_cflags,
             });
-            ngui.defineCMacro("USE_X11", "1");
             ngui.linkSystemLibrary("X11");
         },
         .fbev => {
             ngui.addCSourceFiles(.{ .files = lvgl_fbev_src, .flags = &lvgl_flags });
             ngui.addCSourceFile(.{ .file = b.path("src/ui/c/drv_fbev.c"), .flags = &ngui_cflags });
-            ngui.defineCMacro("USE_FBDEV", "1");
-            ngui.defineCMacro("USE_EVDEV", "1");
         },
     }
 

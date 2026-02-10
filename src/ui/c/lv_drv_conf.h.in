@@ -78,9 +78,7 @@
  *-------------------*/
 
 /* SDL based drivers for display, mouse, mousewheel and keyboard*/
-#ifndef USE_SDL
-# define USE_SDL 0
-#endif
+#define USE_SDL         @USE_SDL@
 
 /* Hardware accelerated SDL driver */
 #ifndef USE_SDL_GPU
@@ -88,8 +86,8 @@
 #endif
 
 #if USE_SDL || USE_SDL_GPU
-#  define SDL_HOR_RES     800
-#  define SDL_VER_RES     480
+#  define SDL_HOR_RES     @SDL_HOR_RES@
+#  define SDL_VER_RES     @SDL_VER_RES@
 
 /* Scale window by this factor (useful when simulating small screens) */
 #  define SDL_ZOOM        1
@@ -188,9 +186,7 @@
 /*----------------------------------------
  *  X11 drivers (monitor, mouse, keyboard)
  *---------------------------------------*/
-#ifndef USE_X11
-#  define USE_X11       0
-#endif
+#define USE_X11         @USE_X11@
 
 /*----------------
  *    SSD1963
@@ -315,9 +311,7 @@
 /*-----------------------------------------
  *  Linux frame buffer device (/dev/fbx)
  *-----------------------------------------*/
-#ifndef USE_FBDEV
-#  define USE_FBDEV           0
-#endif
+#define USE_FBDEV         @USE_FBDEV@
 
 #if USE_FBDEV
 #  define FBDEV_PATH          "/dev/fb0"
@@ -440,9 +434,7 @@
 /*-------------------------------------------------
  * Mouse or touchpad as evdev interface (for Linux based systems)
  *------------------------------------------------*/
-#ifndef USE_EVDEV
-#  define USE_EVDEV           0
-#endif
+#define USE_EVDEV         @USE_EVDEV@
 
 #ifndef USE_BSD_EVDEV
 #  define USE_BSD_EVDEV       0
