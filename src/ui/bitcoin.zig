@@ -14,6 +14,7 @@ const logger = std.log.scoped(.ui);
 const cmark = "#bbbbbb ";
 
 var tab: struct {
+    startup: lvgl.FlexLayout,
     // blockchain section
     currblock: lvgl.Label,
     timestamp: lvgl.Label,
@@ -43,6 +44,14 @@ var tab: struct {
 pub fn initTabPanel(cont: lvgl.Container) !void {
     const parent = cont.flex(.column, .{});
 
+    // startup / loading state: shown until the first successful report arrives
+    {
+        tab.startup = try lvgl.FlexLayout.new(parent, .row, .{ .all = .center });
+        tab.startup.resizeToMax();
+        _ = try lvgl.Spinner.new(tab.startup);
+        _ = try lvgl.Label.new(tab.startup, "STARTING UP ...", .{});
+    }
+
     // blockchain section
     {
         const card = try lvgl.Card.new(parent, "BLOCKCHAIN", .{});
@@ -55,17 +64,17 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
         left.setWidth(lvgl.sizePercent(50));
         left.setHeightToContent();
         left.setPad(10, .row, .{});
-        tab.currblock = try lvgl.Label.new(left, "HEIGHT\n", .{ .recolor = true });
-        tab.timestamp = try lvgl.Label.new(left, "TIMESTAMP\n", .{ .recolor = true });
-        tab.blockhash = try lvgl.Label.new(left, "BLOCK HASH\n", .{ .recolor = true });
+        tab.currblock = try lvgl.Label.new(left, "HEIGHT\n-", .{ .recolor = true });
+        tab.timestamp = try lvgl.Label.new(left, "TIMESTAMP\n-", .{ .recolor = true });
+        tab.blockhash = try lvgl.Label.new(left, "BLOCK HASH\n-", .{ .recolor = true });
         // right column
         const right = try lvgl.FlexLayout.new(row, .column, .{});
         right.setWidth(lvgl.sizePercent(50));
         right.setHeightToContent();
         right.setPad(10, .row, .{});
-        tab.diskusage = try lvgl.Label.new(right, "DISK USAGE\n", .{ .recolor = true });
-        tab.conn_in = try lvgl.Label.new(right, "CONNECTIONS IN\n", .{ .recolor = true });
-        tab.conn_out = try lvgl.Label.new(right, "CONNECTIONS OUT\n", .{ .recolor = true });
+        tab.diskusage = try lvgl.Label.new(right, "DISK USAGE\n-", .{ .recolor = true });
+        tab.conn_in = try lvgl.Label.new(right, "CONNECTIONS IN\n-", .{ .recolor = true });
+        tab.conn_out = try lvgl.Label.new(right, "CONNECTIONS OUT\n-", .{ .recolor = true });
     }
     // balance section
     {
@@ -80,16 +89,16 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
         left.setPad(8, .top, .{});
         left.setPad(10, .row, .{});
         tab.balance.avail_bar = try lvgl.Bar.new(left);
-        tab.balance.avail_pct = try lvgl.Label.new(left, "AVAILABLE\n", .{ .recolor = true });
-        tab.balance.total = try lvgl.Label.new(left, "TOTAL\n", .{ .recolor = true });
+        tab.balance.avail_pct = try lvgl.Label.new(left, "AVAILABLE\n-", .{ .recolor = true });
+        tab.balance.total = try lvgl.Label.new(left, "TOTAL\n-", .{ .recolor = true });
         // right column
         const right = try lvgl.FlexLayout.new(row, .column, .{});
         right.setWidth(lvgl.sizePercent(50));
         right.setHeightToContent();
         right.setPad(10, .row, .{});
-        tab.balance.locked = try lvgl.Label.new(right, "LOCKED\n", .{ .recolor = true });
-        tab.balance.reserved = try lvgl.Label.new(right, "RESERVED\n", .{ .recolor = true });
-        tab.balance.unconf = try lvgl.Label.new(right, "UNCONFIRMED\n", .{ .recolor = true });
+        tab.balance.locked = try lvgl.Label.new(right, "LOCKED\n-", .{ .recolor = true });
+        tab.balance.reserved = try lvgl.Label.new(right, "RESERVED\n-", .{ .recolor = true });
+        tab.balance.unconf = try lvgl.Label.new(right, "UNCONFIRMED\n-", .{ .recolor = true });
     }
     // mempool section
     {
@@ -102,12 +111,12 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
         left.setPad(8, .top, .{});
         left.setPad(10, .row, .{});
         tab.mempool.usage_bar = try lvgl.Bar.new(left);
-        tab.mempool.usage_lab = try lvgl.Label.new(left, "0Mb out of 0Mb (0%)", .{ .recolor = true });
+        tab.mempool.usage_lab = try lvgl.Label.new(left, "- out of - (-)", .{ .recolor = true });
         const right = try lvgl.FlexLayout.new(row, .column, .{});
         right.setWidth(lvgl.sizePercent(50));
         right.setPad(10, .row, .{});
-        tab.mempool.txcount = try lvgl.Label.new(right, "TRANSACTIONS COUNT\n", .{ .recolor = true });
-        tab.mempool.totalfee = try lvgl.Label.new(right, "TOTAL FEES\n", .{ .recolor = true });
+        tab.mempool.txcount = try lvgl.Label.new(right, "TRANSACTIONS COUNT\n-", .{ .recolor = true });
+        tab.mempool.totalfee = try lvgl.Label.new(right, "TOTAL FEES\n-", .{ .recolor = true });
     }
 }
 
@@ -115,6 +124,9 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
 /// the tab must be inited first with initTabPanel.
 pub fn updateTabPanel(rep: comm.Message.OnchainReport) !void {
     var buf: [512]u8 = undefined;
+
+    // first successful report: hide the startup spinner
+    tab.startup.hide();
 
     // blockchain section
     try tab.currblock.setTextFmt(&buf, cmark ++ "HEIGHT#\n{d}", .{rep.blocks});
