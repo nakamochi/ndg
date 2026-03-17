@@ -22,7 +22,7 @@ fn safeTermThenKillGui(ngui: anytype) void {
 
     while (true) {
         // Probe child state without blocking.
-        const r = c.waitpid(pid, &status, c.WNOHANG);
+        const r = c.waitpid(@as(c.pid_t, @intCast(pid)), &status, c.WNOHANG);
 
         if (r == 0) {
             // Child is still running; it's safe to perform the usual TERM/KILL logic.
