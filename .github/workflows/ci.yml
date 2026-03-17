@@ -32,9 +32,13 @@ jobs:
           run: |
             sudo apt-get install -y libx11-dev
             zig build -Ddriver=x11
-        - name: Build Aarch64
+        - name: Build Aarch64 (Nakamochi)
           run: |
             zig build -Ddriver=fbev -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe -Dstrip
+            sha256sum zig-out/bin/nd zig-out/bin/ngui
+        - name: Build Aarch64 (QEMU)
+          run: |
+            zig build -Ddriver=fbev -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe -Dstrip -Dlv_color_depth=32
             sha256sum zig-out/bin/nd zig-out/bin/ngui
         - name: Playground
           run: zig build guiplay btcrpc lndhc
