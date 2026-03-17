@@ -12,6 +12,51 @@ const c = @cImport({
     @cInclude("sys/wait.h");
 });
 
+// Best-effort check to avoid signaling a child that has already been reaped.
+// This does not fully eliminate PID reuse races: another thread may reap the
+// child after this probe returns 0 and before termThenKill() sends signals.
+// A complete fix requires exclusive child ownership or pidfd-based signaling.
+fn safeTermThenKillGui(ngui: anytype) void {
+    const pid = ngui.pid;
+    var status: c_int = 0;
+
+    while (true) {
+        // Probe child state without blocking.
+        const r = c.waitpid(pid, &status, c.WNOHANG);
+
+        if (r == 0) {
+            // Child is still running; it's safe to perform the usual TERM/KILL logic.
+            ngui.termThenKill();
+            return;
+        }
+
+        if (r == -1) {
+            const err = getErrno();
+
+            if (err == c.EINTR) {
+                // Interrupted by a signal; retry the probe.
+                continue;
+            }
+
+            if (err == c.ECHILD) {
+                // No such child (likely already reaped by watcher); avoid signaling
+                // to prevent hitting a recycled PID.
+                return;
+            }
+
+            // On other errors, preserve existing behavior by falling back to
+            // termThenKill(), even though it might fail; this maintains semantics
+            // while still protecting the common ECHILD case.
+            ngui.termThenKill();
+            return;
+        }
+
+        // r > 0: we just reaped the child here; no need to send any signals and we
+        // should not risk racing with PID reuse by calling termThenKill().
+        return;
+    }
+}
+
 const time = std.time;
 const Address = std.net.Address;
 
@@ -237,6 +282,33 @@ fn reapNoIntr(pid: posix.pid_t) void {
         if (r == @as(c.pid_t, @intCast(pid))) return;
         if (r == -1 and getErrno() == c.EINTR) continue;
         return; // ECHILD or other hard error; nothing more to do safely
+    }
+}
+
+fn watchGuiChild(pid: posix.pid_t) void {
+    var status: c_int = 0;
+
+    while (true) {
+        const r = c.waitpid(@as(c.pid_t, @intCast(pid)), &status, 0);
+        if (r == -1) {
+            const e = getErrno();
+            if (e == c.EINTR) continue;
+            if (e != c.ECHILD) {
+                logger.err("waitpid(ngui): errno {}", .{e});
+            }
+            return;
+        }
+
+        if (c.WIFEXITED(status)) {
+            logger.warn("ngui exited with code {}", .{c.WEXITSTATUS(status)});
+        } else if (c.WIFSIGNALED(status)) {
+            logger.warn("ngui terminated by signal {}", .{c.WTERMSIG(status)});
+        } else {
+            logger.warn("ngui exited", .{});
+        }
+
+        sigquit.set();
+        return;
     }
 }
 
@@ -529,7 +601,13 @@ pub fn main() !void {
     // if the daemon fails to start and its process exits, ngui may hang forever
     // preventing system services monitoring to detect a failure and restart nd.
     // so, make sure to kill the ngui child process on fatal failures.
-    errdefer ngui.termThenKill();
+    const ngui_watch_thread = std.Thread.spawn(.{}, watchGuiChild, .{ngui.pid}) catch |err| {
+        logger.err("unable to start ngui watcher thread: {any}", .{err});
+        safeTermThenKillGui(ngui);
+        return err;
+    };
+    defer ngui_watch_thread.join();
+    errdefer safeTermThenKillGui(ngui);
 
     // the i/o is closed as soon as ngui child process terminates.
     const uireader = ngui.stdout.reader();
@@ -568,6 +646,6 @@ pub fn main() !void {
     nd.stop();
     // once ngui exits, it'll close uireader/writer i/o from child proc
     // which lets the daemon's wait() to return.
-    ngui.termThenKill();
+    safeTermThenKillGui(ngui);
     nd.wait();
 }
