@@ -7,8 +7,14 @@ pub fn build(b: *std.Build) void {
     const drv = b.option(DriverTarget, "driver", "display and input drivers combo; default: x11") orelse .x11;
     const disp_horiz = b.option(u32, "horiz", "display horizontal pixels count; default: 800") orelse 800;
     const disp_vert = b.option(u32, "vert", "display vertical pixels count; default: 480") orelse 480;
+    const lv_color_depth = b.option(u8, "lv_color_depth", "LVGL color depth, 16 or 32; default: 16") orelse 16;
+    const lv_color_16_swap = b.option(bool, "lv_color_16_swap", "Swap RGB565 bytes; default: false") orelse false;
     const lvgl_loglevel = b.option(LVGLLogLevel, "lvgl_loglevel", "LVGL lib logging level") orelse LVGLLogLevel.default(optimize);
     const inver = b.option([]const u8, "version", "semantic version of the build; must match git tag when available");
+
+    if (lv_color_depth != 16 and lv_color_depth != 32) {
+        @panic("lv_color_depth must be 16 or 32");
+    }
 
     const buildopts = b.addOptions();
     const buildopts_mod = buildopts.createModule();
@@ -43,6 +49,8 @@ pub fn build(b: *std.Build) void {
             .include_path = "lv_conf.h",
         },
         .{
+            .LV_COLOR_DEPTH = lv_color_depth,
+            .LV_COLOR_16_SWAP = @intFromBool(lv_color_16_swap),
             // string-like macro value, e.g. LV_LOG_LEVEL_WARN
             .LV_LOG_LEVEL = lvgl_loglevel.text(),
         },
