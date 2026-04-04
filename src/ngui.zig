@@ -165,6 +165,67 @@ export fn nm_wifi_start_connect(ssid: [*:0]const u8, password: [*:0]const u8) ca
     comm.pipeWrite(msg) catch |err| logger.err("nm_wifi_start_connect: {any}", .{err});
 }
 
+fn isIpv4Addr(addr: []const u8) bool {
+    return std.mem.indexOfScalar(u8, addr, '.') != null;
+}
+
+fn isFe80Ipv6Addr(addr: []const u8) bool {
+    if (addr.len < 5) return false;
+    return std.ascii.eqlIgnoreCase(addr[0..5], "fe80:");
+}
+
+fn shouldDisplayIpv6Addr(addr: []const u8) bool {
+    return std.mem.indexOfScalar(u8, addr, ':') != null and !isFe80Ipv6Addr(addr);
+}
+
+fn writeDisplayIpAddr(writer: anytype, addr: []const u8) !void {
+    if (!isIpv4Addr(addr) and addr.len > 28) {
+        try writer.print("{s}...{s}", .{ addr[0..16], addr[addr.len - 8 ..] });
+        return;
+    }
+    try writer.writeAll(addr);
+}
+
+test "isIpv4Addr detects dotted addresses only" {
+    try std.testing.expect(isIpv4Addr("192.168.1.10"));
+    try std.testing.expect(!isIpv4Addr("2001:db8::1"));
+    try std.testing.expect(!isIpv4Addr("localhost"));
+}
+
+test "isFe80Ipv6Addr matches fe80 prefix case-insensitively" {
+    try std.testing.expect(isFe80Ipv6Addr("fe80::1"));
+    try std.testing.expect(isFe80Ipv6Addr("FE80::abcd"));
+    try std.testing.expect(!isFe80Ipv6Addr("2001:db8::1"));
+    try std.testing.expect(!isFe80Ipv6Addr("fe8"));
+}
+
+test "shouldDisplayIpv6Addr excludes fe80 and non-ipv6 addresses" {
+    try std.testing.expect(shouldDisplayIpv6Addr("2001:db8::1"));
+    try std.testing.expect(!shouldDisplayIpv6Addr("fe80::1"));
+    try std.testing.expect(!shouldDisplayIpv6Addr("10.0.0.5"));
+    try std.testing.expect(!shouldDisplayIpv6Addr("hostname"));
+}
+
+test "writeDisplayIpAddr preserves ipv4 and short ipv6 addresses" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeDisplayIpAddr(buf.writer(), "192.168.1.10");
+    try std.testing.expectEqualStrings("192.168.1.10", buf.items);
+
+    buf.clearRetainingCapacity();
+    try writeDisplayIpAddr(buf.writer(), "2001:db8::1");
+    try std.testing.expectEqualStrings("2001:db8::1", buf.items);
+}
+
+test "writeDisplayIpAddr truncates long non-ipv4 addresses" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    const addr = "1234567890abcdef:1234567890abcdef";
+    try writeDisplayIpAddr(buf.writer(), addr);
+    try std.testing.expectEqualStrings("1234567890abcdef...90abcdef", buf.items);
+}
 /// callers must hold ui mutex for the whole duration.
 fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
     var wifi_list: ?[:0]const u8 = null;
@@ -186,9 +247,27 @@ fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
     }
 
     if (report.ipaddrs.len > 0) {
-        const ipaddrs = try std.mem.join(gpa, "\n", report.ipaddrs);
-        defer gpa.free(ipaddrs);
-        try w.print("\n\nIP addresses:\n{s}", .{ipaddrs});
+        try w.writeAll("\n\nIP addresses:\n");
+
+        var has_ipv4 = false;
+        var wrote_any = false;
+        for (report.ipaddrs) |addr| {
+            if (!isIpv4Addr(addr)) continue;
+            if (wrote_any) try w.writeByte('\n');
+            try writeDisplayIpAddr(w, addr);
+            wrote_any = true;
+            has_ipv4 = true;
+        }
+
+        if (!has_ipv4) {
+            for (report.ipaddrs) |addr| {
+                if (!shouldDisplayIpv6Addr(addr)) continue;
+                if (wrote_any) try w.writeByte('\n');
+                try writeDisplayIpAddr(w, addr);
+                wrote_any = true;
+                break;
+            }
+        }
     }
 
     const text = try status.toOwnedSliceSentinel(0);
