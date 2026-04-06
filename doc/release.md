@@ -48,3 +48,51 @@ Describe main changes in the release notes.
 
 Update `ndg/env` in the [sysupdates repository](https://github.com/nakamochi/sysupdates) with the new version and its SHA256 checksum.
 
+## Versioning
+
+NDG follows semantic versioning (MAJOR.MINOR.PATCH).
+
+The version is either provided at build time (`-Dversion`) or derived from the current git tag when available. If a git tag is present, the version must match it. If no tag is available, `-Dversion` must be provided. This is enforced by the build system.
+
+### How to choose the version
+
+Use the following guidelines when creating a new release:
+
+#### PATCH
+
+Increment PATCH for:
+
+- bug fixes
+- small UI fixes or tweaks
+- internal refactors with no user-visible impact
+- build, CI, or tooling changes
+
+These changes should not introduce new user-facing functionality or alter expected behavior.
+
+#### MINOR
+
+Increment MINOR for:
+
+- new user-facing features
+- new capabilities or workflows
+- noticeable UX improvements
+- expanded hardware or platform support
+- behavior changes that improve correctness or visibility
+
+This is the default choice when something new is added or behavior is meaningfully improved.
+
+#### MAJOR
+
+Increment MAJOR for:
+
+- breaking changes in behavior or workflows
+- incompatible changes requiring reprovisioning or migration
+- significant architectural changes affecting how the system is used or operated
+- declaring the system stable and production-ready (e.g. moving from 0.x to 1.0)
+
+### Notes
+
+- The build system validates that the version is a valid semantic version and, when a git tag is present, that it matches the tag.
+- Choosing the correct version bump is a maintainer decision based on user-visible impact.
+- When unsure between PATCH and MINOR, prefer MINOR.
+
