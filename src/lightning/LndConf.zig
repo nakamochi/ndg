@@ -216,6 +216,31 @@ pub fn alias(self: LndConf) []const u8 {
     };
 }
 
+/// returns a string property value from a section.
+/// sect_name must be lowercase (same requirement as findSection).
+/// if the key is repeated, returns the first value.
+pub fn getPropString(self: *const LndConf, sect_name: []const u8, key: []const u8) ?[]const u8 {
+    const sec = self.findSection(sect_name) orelse return null;
+    const val = sec.props.get(key) orelse return null;
+    return switch (val) {
+        .str => |s| s,
+        .astr => |a| if (a.len > 0) a[0] else null,
+    };
+}
+
+/// returns a bool property value from a section.
+/// accepted true values are: 1, true, yes, on.
+/// missing or unrecognized values return false.
+pub fn getPropBool(self: *const LndConf, sect_name: []const u8, key: []const u8) bool {
+    const val = self.getPropString(sect_name, key) orelse return false;
+    if (std.ascii.eqlIgnoreCase(val, "1") or std.ascii.eqlIgnoreCase(val, "true") or std.ascii.eqlIgnoreCase(val, "yes") or std.ascii.eqlIgnoreCase(val, "on")) return true;
+    return false;
+}
+
+pub fn wtClientActive(self: *const LndConf) bool {
+    return self.getPropBool("wtclient", "wtclient.active");
+}
+
 /// sets alias field value to the new name.
 /// the arg slice is owned by the caller and can be freed upon function return.
 pub fn setAlias(self: *LndConf, newname: []const u8) !void {
@@ -326,4 +351,33 @@ test "lnd: conf alias" {
         \\
     ;
     try t.expectEqualStrings(want_alias2, buf.items);
+}
+
+test "lnd: conf wtClientActive" {
+    const t = std.testing;
+
+    var conf = try LndConf.init(t.allocator);
+    defer conf.deinit();
+
+    try t.expect(!conf.wtClientActive());
+
+    var sec = try conf.appendSection("wtclient");
+    try sec.setPropStr("wtclient.active", "true");
+    try t.expect(conf.wtClientActive());
+
+    try sec.setPropStr("wtclient.active", "false");
+    try t.expect(!conf.wtClientActive());
+}
+
+test "lnd: conf getPropBool true values" {
+    const t = std.testing;
+
+    const vals: []const []const u8 = &.{ "1", "true", "TRUE", "yes", "on" };
+    for (vals) |v| {
+        var conf = try LndConf.init(t.allocator);
+        defer conf.deinit();
+        var sec = try conf.appendSection("wtclient");
+        try sec.setPropStr("wtclient.active", v);
+        try t.expect(conf.wtClientActive());
+    }
 }
