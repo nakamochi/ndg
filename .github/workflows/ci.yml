@@ -14,6 +14,10 @@ jobs:
           uses: ludeeus/action-shellcheck@master
           with:
             ignore_paths: lib
+        - name: Set up shfmt
+          uses: pollenjp/setup-shfmt@v1
+        - name: Check shell formatting
+          run: shfmt -d -i 4 -ci ./tools/ 
         - name: Verify submodules
           run: git submodule status --recursive
         - name: Set up Zig
