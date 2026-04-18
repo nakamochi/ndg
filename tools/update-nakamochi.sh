@@ -25,9 +25,21 @@ if [[ -z $nakamochi_nd_path ]]; then
     exit 1
 fi
 
-$ssh_cmd "sha256sum $nakamochi_nd_path/*; sv stop nd" || { echo "Failed to stop nd service"; exit 1; }
-scp "$BINARIES_PATH/nd" "root@$NAKAMOCHI_IP:$nakamochi_nd_path/nd" || { echo "Failed to copy nd binary"; exit 1; }
-scp "$BINARIES_PATH/ngui" "root@$NAKAMOCHI_IP:$nakamochi_nd_path/ngui" || { echo "Failed to copy ngui binary"; exit 1; }
-$ssh_cmd "sha256sum $nakamochi_nd_path/*; sv start nd; grep ndg /var/log/socklog/daemon/current | tail" || { echo "Failed to start nd service"; exit 1; }
+$ssh_cmd "sha256sum $nakamochi_nd_path/*; sv stop nd" || {
+    echo "Failed to stop nd service"
+    exit 1
+}
+scp "$BINARIES_PATH/nd" "root@$NAKAMOCHI_IP:$nakamochi_nd_path/nd" || {
+    echo "Failed to copy nd binary"
+    exit 1
+}
+scp "$BINARIES_PATH/ngui" "root@$NAKAMOCHI_IP:$nakamochi_nd_path/ngui" || {
+    echo "Failed to copy ngui binary"
+    exit 1
+}
+$ssh_cmd "sha256sum $nakamochi_nd_path/*; sv start nd; grep ndg /var/log/socklog/daemon/current | tail" || {
+    echo "Failed to start nd service"
+    exit 1
+}
 
 echo "Nakamochi NDG update completed."
