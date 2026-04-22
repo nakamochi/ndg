@@ -530,7 +530,7 @@ pub fn genLndConfig(self: Config, opt: GenLndConfOpt) !void {
     var sec = try conf.appendDefaultSection();
     try sec.setPropStr("debuglevel", "info");
     try sec.setPropStr("maxpendingchannels", "10");
-    try sec.setPropStr("maxlogfiles", "3");
+    try sec.setPropStr("tlsautorefresh", "true");
     try sec.setPropStr("listen", "[::]:9735"); // or 0.0.0.0:9735
     try sec.setPropStr("rpclisten", "0.0.0.0:10009");
     try sec.setPropStr("restlisten", "0.0.0.0:10010");
@@ -548,7 +548,6 @@ pub fn genLndConfig(self: Config, opt: GenLndConfOpt) !void {
     // bitcoin chain settings
     sec = try conf.appendSection("bitcoin");
     try sec.setPropFmt("bitcoin.chaindir", "{s}/chain/mainnet", .{LND_DATA_DIR});
-    try sec.setPropStr("bitcoin.active", "true");
     try sec.setPropStr("bitcoin.mainnet", "true");
     try sec.setPropStr("bitcoin.testnet", "false");
     try sec.setPropStr("bitcoin.regtest", "false");
@@ -568,9 +567,15 @@ pub fn genLndConfig(self: Config, opt: GenLndConfOpt) !void {
     // other settings
     sec = try conf.appendSection("autopilot");
     try sec.setPropStr("autopilot.active", "false");
+    sec = try conf.appendSection("wtclient");
+    try sec.setPropStr("wtclient.active", "true");
+    sec = try conf.appendSection("bolt");
+    try sec.setPropStr("db.bolt.auto-compact", "true");
+    try sec.setPropStr("db.bolt.auto-compact-min-age", "168h");
     sec = try conf.appendSection("tor");
     try sec.setPropStr("tor.active", "true");
     try sec.setPropStr("tor.skip-proxy-for-clearnet-targets", "true");
+    try sec.setPropStr("tor.v3", "true");
 
     // dump config into the file.
     const file = try std.io.BufferedAtomicFile.create(allocator, std.fs.cwd(), confpath, .{ .mode = 0o400 });
@@ -777,6 +782,13 @@ test "ndconfig: genLndConfig" {
     defer t.allocator.free(bytes);
     try tt.expectSubstring("tlsextradomain=test.onion\n", bytes);
     try tt.expectSubstring("externalhosts=test.onion\n", bytes);
+    try tt.expectSubstring("tlsautorefresh=true\n", bytes);
+    try tt.expectSubstring("wtclient.active=true\n", bytes);
+    try tt.expectNoSubstring("maxlogfiles", bytes);
+    try tt.expectNoSubstring("bitcoin.active", bytes);
+    try tt.expectSubstring("db.bolt.auto-compact=true\n", bytes);
+    try tt.expectSubstring("db.bolt.auto-compact-min-age=168h\n", bytes);
+    try tt.expectSubstring("tor.v3=true\n", bytes);
     try tt.expectNoSubstring("wallet-unlock-password-file", bytes);
     try tt.expectSubstring("bitcoind.rpcpass=test secret\n", bytes);
 
@@ -791,6 +803,8 @@ test "ndconfig: genLndConfig" {
     try t.expect(lndconf.findSection("bitcoin") != null);
     try t.expect(lndconf.findSection("bitcoind") != null);
     try t.expect(lndconf.findSection("autopilot") != null);
+    try t.expect(lndconf.findSection("wtclient") != null);
+    try t.expect(lndconf.findSection("bolt") != null);
     try t.expect(lndconf.findSection("tor") != null);
 }
 
