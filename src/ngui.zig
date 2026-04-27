@@ -16,7 +16,7 @@ const logger = std.log.scoped(.ngui);
 // these are auto-closed as soon as main fn terminates.
 const stderr = std.io.getStdErr().writer();
 
-extern "c" fn ui_update_network_status(text: [*:0]const u8, wifi_list: ?[*:0]const u8) void;
+extern "c" fn ui_update_network_status(text: [*:0]const u8, wifi_list: ?[*:0]const u8, active_ssid: ?[*:0]const u8) void;
 
 /// global heap allocator used throughout the GUI program.
 /// TODO: thread-safety?
@@ -226,15 +226,28 @@ test "writeDisplayIpAddr truncates long non-ipv4 addresses" {
     try writeDisplayIpAddr(buf.writer(), addr);
     try std.testing.expectEqualStrings("1234567890abcdef...90abcdef", buf.items);
 }
+
 /// callers must hold ui mutex for the whole duration.
 fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
     var wifi_list: ?[:0]const u8 = null;
     var wifi_list_ptr: ?[*:0]const u8 = null;
+
     if (report.wifi_scan_networks.len > 0) {
         wifi_list = try std.mem.joinZ(gpa, "\n", report.wifi_scan_networks);
         wifi_list_ptr = wifi_list.?.ptr;
     }
     defer if (wifi_list) |v| gpa.free(v);
+
+    var active_ssid: ?[:0]const u8 = null;
+    var active_ssid_ptr: ?[*:0]const u8 = null;
+
+    if (report.wifi_scan_networks.len > 0) {
+        if (report.wifi_ssid) |ssid| {
+            active_ssid = try gpa.dupeZ(u8, ssid);
+            active_ssid_ptr = active_ssid.?.ptr;
+        }
+    }
+    defer if (active_ssid) |v| gpa.free(v);
 
     var status = std.ArrayList(u8).init(gpa); // free'd as owned slice below
     const w = status.writer();
@@ -272,7 +285,7 @@ fn updateNetworkStatus(report: comm.Message.NetworkReport) !void {
 
     const text = try status.toOwnedSliceSentinel(0);
     defer gpa.free(text);
-    ui_update_network_status(text, wifi_list_ptr);
+    ui_update_network_status(text, wifi_list_ptr, active_ssid_ptr);
 
     // request network status again if we're connected but IP addr list is empty.
     // can happen with a fresh connection while dhcp is still in progress.
