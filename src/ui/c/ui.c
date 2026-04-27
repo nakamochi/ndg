@@ -8,6 +8,7 @@
 #include "lvgl/lvgl.h"
 
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 static lv_style_t style_title;
@@ -161,15 +162,50 @@ static struct {
     lv_obj_t *power_halt_btn_obj;   /* lv_btn_create */
 } settings;
 
+static void wifi_select_ssid(const char *ssid)
+{
+    if (ssid == NULL || ssid[0] == '\0') {
+        return;
+    }
+
+    const char *opts = lv_dropdown_get_options(settings.wifi_ssid_list_obj);
+    if (opts == NULL) {
+        return;
+    }
+
+    uint16_t idx = 0;
+    const char *p = opts;
+    const size_t ssid_len = strlen(ssid);
+    while (*p) {
+        const char *end = strchr(p, '\n');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+
+        if (ssid_len == len && memcmp(p, ssid, len) == 0) {
+            lv_dropdown_set_selected(settings.wifi_ssid_list_obj, idx);
+            return;
+        }
+
+        if (!end) {
+            break;
+        }
+
+        p = end + 1;
+        idx++;
+    }
+}
+
 /**
  * update the UI with network connection info, placing text into wifi_status_obj as is.
  * wifi_list is optional; items must be delimited by '\n' if non-null.
- * args are alloc-copied and owned by lvgl.
+ * text and wifi_list are alloc-copied and owned by lvgl.
+ * active_ssid is only read synchronously to select the current SSID and only
+ * needs to remain valid for the duration of this call.
  */
-extern void ui_update_network_status(const char *text, const char *wifi_list)
+extern void ui_update_network_status(const char *text, const char *wifi_list, const char *active_ssid)
 {
     if (wifi_list) {
         lv_dropdown_set_options(settings.wifi_ssid_list_obj, wifi_list);
+        wifi_select_ssid(active_ssid);
     }
     lv_obj_clear_state(settings.wifi_connect_btn_obj, LV_STATE_DISABLED);
     lv_obj_add_flag(settings.wifi_spinner_obj, LV_OBJ_FLAG_HIDDEN);
