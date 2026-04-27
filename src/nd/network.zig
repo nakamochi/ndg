@@ -13,6 +13,88 @@ const types = @import("../types.zig");
 
 const logger = std.log.scoped(.network);
 
+fn unescapeWpaSsidForDisplay(gpa: mem.Allocator, in: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).init(gpa);
+    defer out.deinit();
+
+    var i: usize = 0;
+    while (i < in.len) {
+        if (in[i] == '\\' and i + 3 < in.len and in[i + 1] == 'x') {
+            const hex = [_]u8{ in[i + 2], in[i + 3] };
+            if (std.fmt.parseInt(u8, &hex, 16)) |b| {
+                // Decode only non-ASCII bytes. This fixes UTF-8 SSIDs like
+                // \xc4\x81 -> ā, but keeps \x00, \x0a, \x09, etc. escaped.
+                if (b >= 0x80) {
+                    try out.append(b);
+                    i += 4;
+                    continue;
+                }
+            } else |_| {}
+        }
+
+        try out.append(in[i]);
+        i += 1;
+    }
+
+    // LVGL expects valid UTF-8. If decoding produced invalid UTF-8,
+    // keep WPA's escaped form instead of feeding broken bytes to UI.
+    if (!std.unicode.utf8ValidateSlice(out.items)) {
+        return try gpa.dupe(u8, in);
+    }
+
+    return try out.toOwnedSlice();
+}
+
+test "unescapeWpaSsidForDisplay decodes escaped UTF-8 bytes" {
+    const got = try unescapeWpaSsidForDisplay(
+        std.testing.allocator,
+        "Tava m\\xc4\\x81te.",
+    );
+    defer std.testing.allocator.free(got);
+
+    try std.testing.expectEqualStrings("Tava māte.", got);
+}
+
+test "unescapeWpaSsidForDisplay keeps ASCII control escapes literal" {
+    const got = try unescapeWpaSsidForDisplay(
+        std.testing.allocator,
+        "ssid\\x00with\\x0anewline\\x09tab",
+    );
+    defer std.testing.allocator.free(got);
+
+    try std.testing.expectEqualStrings("ssid\\x00with\\x0anewline\\x09tab", got);
+}
+
+test "unescapeWpaSsidForDisplay keeps invalid UTF-8 escaped form" {
+    const got = try unescapeWpaSsidForDisplay(
+        std.testing.allocator,
+        "bad\\xc4ssid",
+    );
+    defer std.testing.allocator.free(got);
+
+    try std.testing.expectEqualStrings("bad\\xc4ssid", got);
+}
+
+test "unescapeWpaSsidForDisplay keeps malformed hex escapes literal" {
+    const got = try unescapeWpaSsidForDisplay(
+        std.testing.allocator,
+        "ssid\\xZZtest\\x1",
+    );
+    defer std.testing.allocator.free(got);
+
+    try std.testing.expectEqualStrings("ssid\\xZZtest\\x1", got);
+}
+
+test "unescapeWpaSsidForDisplay decodes German umlauts and sharp s" {
+    const got = try unescapeWpaSsidForDisplay(
+        std.testing.allocator,
+        "\\xc3\\xa4\\xc3\\xb6\\xc3\\xbc\\xc3\\x84\\xc3\\x96\\xc3\\x9c\\xc3\\x9f",
+    );
+    defer std.testing.allocator.free(got);
+
+    try std.testing.expectEqualStrings("äöüÄÖÜß", got);
+}
+
 /// creates a new network using wpa_ctrl and configures its parameters.
 /// returns an ID of the new wifi.
 ///
@@ -108,7 +190,7 @@ fn queryWifiSSID(gpa: mem.Allocator, wpa_ctrl: *types.WpaControl) !?[]const u8 {
     while (it.next()) |line| {
         if (mem.startsWith(u8, line, ssid)) {
             // TODO: check line.len vs ssid.len
-            const v = try gpa.dupe(u8, line[ssid.len..]);
+            const v = try unescapeWpaSsidForDisplay(gpa, line[ssid.len..]);
             return v;
         }
     }
@@ -136,7 +218,9 @@ fn queryWifiScanResults(gpa: mem.Allocator, wpa_ctrl: *types.WpaControl) !types.
     while (it.next()) |line| {
         // TODO: wpactrl's text protocol won't work for names with control characters
         if (mem.lastIndexOfScalar(u8, line, '\t')) |i| {
-            const s = mem.trim(u8, line[i..], "\t\n");
+            const raw = mem.trim(u8, line[i..], "\t\n");
+            const s = try unescapeWpaSsidForDisplay(gpa, raw);
+            defer gpa.free(s);
             if (s.len == 0 or seen.contains(s)) {
                 continue;
             }
