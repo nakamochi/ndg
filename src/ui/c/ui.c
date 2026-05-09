@@ -7,9 +7,18 @@
 
 #include "lvgl/lvgl.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#ifndef LV_SYMBOL_EYE_OPEN
+#define LV_SYMBOL_EYE_OPEN "SHOW"
+#endif
+
+#ifndef LV_SYMBOL_EYE_CLOSE
+#define LV_SYMBOL_EYE_CLOSE "HIDE"
+#endif
 
 static lv_style_t style_title;
 static lv_style_t style_text_muted;
@@ -154,13 +163,26 @@ static void wifi_pwd_input_cb(lv_event_t *e)
 }
 
 static struct {
-    lv_obj_t *wifi_spinner_obj;     /* lv_spinner_create */
-    lv_obj_t *wifi_status_obj;      /* lv_label_create */
-    lv_obj_t *wifi_connect_btn_obj; /* lv_btn_create */
-    lv_obj_t *wifi_ssid_list_obj;   /* lv_dropdown_create */
-    lv_obj_t *wifi_pwd_obj;         /* lv_textarea_create */
-    lv_obj_t *power_halt_btn_obj;   /* lv_btn_create */
+    lv_obj_t *wifi_spinner_obj;       /* lv_spinner_create */
+    lv_obj_t *wifi_status_obj;        /* lv_label_create */
+    lv_obj_t *wifi_connect_btn_obj;   /* lv_btn_create */
+    lv_obj_t *wifi_ssid_list_obj;     /* lv_dropdown_create */
+    lv_obj_t *wifi_pwd_obj;           /* lv_textarea_create */
+    lv_obj_t *wifi_pwd_eye_btn_obj;   /* lv_btn_create */
+    lv_obj_t *wifi_pwd_eye_label_obj; /* lv_label_create */
+    bool wifi_pwd_visible;
+    lv_obj_t *power_halt_btn_obj; /* lv_btn_create */
 } settings;
+
+static void wifi_pwd_eye_btn_callback(lv_event_t *e)
+{
+    (void)e; /* unused */
+
+    settings.wifi_pwd_visible = !settings.wifi_pwd_visible;
+    lv_textarea_set_password_mode(settings.wifi_pwd_obj, !settings.wifi_pwd_visible);
+    lv_label_set_text_static(settings.wifi_pwd_eye_label_obj,
+        settings.wifi_pwd_visible ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
+}
 
 static void wifi_select_ssid(const char *ssid)
 {
@@ -260,9 +282,21 @@ static int create_settings_panel(lv_obj_t *parent)
     lv_obj_add_style(wifi_pwd_label, &style_text_muted, 0);
     lv_obj_t *wifi_pwd = lv_textarea_create(wifi_panel);
     settings.wifi_pwd_obj = wifi_pwd;
+    settings.wifi_pwd_visible = false;
     lv_textarea_set_one_line(wifi_pwd, true);
     lv_textarea_set_password_mode(wifi_pwd, true);
     lv_obj_add_event_cb(wifi_pwd, wifi_pwd_input_cb, LV_EVENT_ALL, NULL);
+
+    lv_obj_t *wifi_pwd_eye_btn = lv_btn_create(wifi_panel);
+    lv_obj_clear_flag(wifi_pwd_eye_btn,
+        LV_OBJ_FLAG_CLICK_FOCUSABLE); /* prevent taking focus away from the password input */
+    settings.wifi_pwd_eye_btn_obj = wifi_pwd_eye_btn;
+    lv_obj_set_height(wifi_pwd_eye_btn, LV_SIZE_CONTENT);
+    lv_obj_add_event_cb(wifi_pwd_eye_btn, wifi_pwd_eye_btn_callback, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *wifi_pwd_eye_label = lv_label_create(wifi_pwd_eye_btn);
+    settings.wifi_pwd_eye_label_obj = wifi_pwd_eye_label;
+    lv_label_set_text_static(wifi_pwd_eye_label, LV_SYMBOL_EYE_OPEN);
+    lv_obj_center(wifi_pwd_eye_label);
 
     lv_obj_t *wifi_connect_btn = lv_btn_create(wifi_panel);
     settings.wifi_connect_btn_obj = wifi_connect_btn;
@@ -322,7 +356,7 @@ static int create_settings_panel(lv_obj_t *parent)
     lv_obj_set_grid_cell(power_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 3, 1);
     lv_obj_set_grid_cell(sysupdates_panel, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 4, 1);
 
-    static lv_coord_t wifi_grid_cols[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+    static lv_coord_t wifi_grid_cols[] = {LV_GRID_FR(1), LV_GRID_FR(1), 60, LV_GRID_TEMPLATE_LAST};
     static lv_coord_t wifi_grid_rows[] = {/**/
         LV_GRID_CONTENT,                  /* title */
         5,                                /* separator */
@@ -335,16 +369,17 @@ static int create_settings_panel(lv_obj_t *parent)
         LV_GRID_CONTENT,                  /* connect btn */
         LV_GRID_TEMPLATE_LAST};
     lv_obj_set_grid_dsc_array(wifi_panel, wifi_grid_cols, wifi_grid_rows);
-    lv_obj_set_grid_cell(wifi_panel_title, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_CENTER, 0, 1);
-    lv_obj_set_grid_cell(wifi_spinner, LV_GRID_ALIGN_END, 1, 1, LV_GRID_ALIGN_CENTER, 0, 1);
+    lv_obj_set_grid_cell(wifi_panel_title, LV_GRID_ALIGN_STRETCH, 0, 2, LV_GRID_ALIGN_CENTER, 0, 1);
+    lv_obj_set_grid_cell(wifi_spinner, LV_GRID_ALIGN_END, 2, 1, LV_GRID_ALIGN_CENTER, 0, 1);
     /* column 0 */
     lv_obj_set_grid_cell(wifi_status, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_START, 2, 7);
     /* column 1 */
-    lv_obj_set_grid_cell(wifi_ssid_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_START, 2, 1);
-    lv_obj_set_grid_cell(wifi_ssid, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 3, 1);
-    lv_obj_set_grid_cell(wifi_pwd_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_START, 5, 1);
+    lv_obj_set_grid_cell(wifi_ssid_label, LV_GRID_ALIGN_START, 1, 2, LV_GRID_ALIGN_START, 2, 1);
+    lv_obj_set_grid_cell(wifi_ssid, LV_GRID_ALIGN_STRETCH, 1, 2, LV_GRID_ALIGN_CENTER, 3, 1);
+    lv_obj_set_grid_cell(wifi_pwd_label, LV_GRID_ALIGN_START, 1, 2, LV_GRID_ALIGN_START, 5, 1);
     lv_obj_set_grid_cell(wifi_pwd, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 6, 1);
-    lv_obj_set_grid_cell(wifi_connect_btn, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_CENTER, 8, 1);
+    lv_obj_set_grid_cell(wifi_pwd_eye_btn, LV_GRID_ALIGN_STRETCH, 2, 1, LV_GRID_ALIGN_CENTER, 6, 1);
+    lv_obj_set_grid_cell(wifi_connect_btn, LV_GRID_ALIGN_STRETCH, 1, 2, LV_GRID_ALIGN_CENTER, 8, 1);
 
     static lv_coord_t power_grid_cols[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
     static lv_coord_t power_grid_rows[] = {/**/
