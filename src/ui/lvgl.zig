@@ -469,6 +469,10 @@ pub const WidgetMethods = struct {
     pub fn hide(self: anytype) void {
         self.setFlag(.hidden);
     }
+
+    pub fn scrollToTop(self: anytype) void {
+        lv_obj_scroll_to_y(self.lvobj, 0, c.LV_ANIM_OFF);
+    }
 };
 
 pub const InteractiveMethods = struct {
@@ -1203,6 +1207,12 @@ extern fn lv_disp_get_scr_act(disp: ?*LvDisp) ?*LvObj;
 extern fn lv_disp_get_layer_top(disp: ?*LvDisp) *LvObj;
 /// makes a screen active without animation.
 extern fn lv_disp_load_scr(scr: *LvObj) void;
+
+extern fn lv_obj_scroll_to_y(
+    obj: *LvObj,
+    y: c.lv_coord_t,
+    anim_en: c.lv_anim_enable_t,
+) void;
 
 // styling and colors --------------------------------------------------------
 
