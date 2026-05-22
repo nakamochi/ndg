@@ -101,6 +101,7 @@ var tab: struct {
         arena: *std.heap.ArenaAllocator, // all non-UI elements are alloc'ed here
         mnemonic: ?types.StringList = null, // 24 words genseed result
         restore_input: ?lvgl.TextArea = null, // restore-from-seed UI bits (optional)
+        restore_text: ?[:0]const u8 = null,
         pairing: ?struct {
             // app_description key to connection URL.
             // keys are static, values are heap-alloc'ed in `setupPairing`.
@@ -321,6 +322,21 @@ pub fn updateTabPanel(msg: comm.Message) !void {
                     tab.setMode(.startup);
                 }
             },
+            // this assumes .init_failed comes from restore flow
+            .init_failed => {
+                tab.wallet_init_pending = false;
+                tab.wallet_init_ctrlconn_requested = false;
+                if (tab.seed_setup != null) {
+                    const wincont = tab.seed_setup.?.topwin.content().flex(.column, .{});
+                    wincont.deleteChildren();
+                    preserve_main_active_tab();
+                    try populateRestoreSetup(wincont);
+                    try showRestoreError(
+                        "failed to initialize lightning wallet.\n\nplease check that all seed words are valid and entered in the correct order.",
+                    );
+                }
+                tab.setMode(.setup);
+            },
             .locked => {
                 if (!tab.wallet_init_pending) {
                     tab.setMode(.wallet_locked);
@@ -376,13 +392,7 @@ fn startSeedSetup() !void {
     try comm.pipeWrite(.lightning_genseed);
 }
 
-fn startRestoreSetup() !void {
-    const win = try lvgl.Window.newTop(60, " " ++ symbol.LightningBolt ++ " RESTORE FROM SEED");
-    try tab.initSetup(win);
-    errdefer tab.destroySetup(); // TODO: display an error instead
-
-    const wincont = win.content().flex(.column, .{});
-
+fn populateRestoreSetup(wincont: lvgl.FlexLayout) !void {
     _ = try lvgl.Label.new(wincont,
         \\enter the 24-word mnemonic seed below, separated by spaces.
         \\the seed is case-insensitive, and words may be separated
@@ -393,6 +403,11 @@ fn startRestoreSetup() !void {
     ta.setWidth(lvgl.sizePercent(100));
     ta.setHeight(lvgl.sizePercent(55));
     ta.setPlaceholderText("word1 word2 ... word24");
+
+    if (tab.seed_setup.?.restore_text) |txt| {
+        ta.setText(txt);
+    }
+
     _ = ta.on(.all, nm_lnd_restore_input_event, null);
     tab.seed_setup.?.restore_input = ta;
 
@@ -410,6 +425,15 @@ fn startRestoreSetup() !void {
     const proceed_btn = try lvgl.TextButton.new(btnrow, "PROCEED " ++ symbol.Right);
     proceed_btn.setWidth(lvgl.sizePercent(30));
     _ = proceed_btn.on(.click, nm_lnd_restore_proceed, null);
+}
+
+fn startRestoreSetup() !void {
+    const win = try lvgl.Window.newTop(60, " " ++ symbol.LightningBolt ++ " RESTORE FROM SEED");
+    try tab.initSetup(win);
+    errdefer tab.destroySetup(); // TODO: display an error instead
+
+    const wincont = win.content().flex(.column, .{});
+    try populateRestoreSetup(wincont);
 }
 
 export fn nm_lnd_restore_input_event(e: *lvgl.LvEvent) callconv(.C) void {
@@ -501,6 +525,7 @@ fn restoreProceed() !void {
     if (ss.restore_input == null) return error.LightningSetupInactive;
 
     const raw = ss.restore_input.?.text(); // expected: []const u8
+    ss.restore_text = try ss.arena.allocator().dupeZ(u8, raw);
 
     // Tokenize by any whitespace; ignore multiple spaces/newlines/tabs.
     var it = std.mem.tokenizeAny(u8, raw, " \t\r\n");
