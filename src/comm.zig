@@ -235,7 +235,7 @@ pub const Message = union(MessageTag) {
     pub const LightningError = struct {
         code: enum(u8) {
             uninitialized, // wallet uninitialized
-            //init_failed, TODO: when .lightning_init_wallet results in an error
+            init_failed, // when .lightning_init_wallet results in an error
             not_ready, // in a startup mode
             locked, // wallet locked
         },

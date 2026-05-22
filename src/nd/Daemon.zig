@@ -120,6 +120,7 @@ const Error = error{
     GenLndConfigFail,
     InitLndWallet,
     UnlockLndWallet,
+    InvalidSeedMnemonic,
 };
 
 const InitOpt = struct {
@@ -561,7 +562,16 @@ fn commThreadLoop(self: *Daemon) void {
                 if (self.screenstate != .locked) {
                     self.initWallet(req) catch |err| {
                         logger.err("initWallet: {!}", .{err});
-                        // TODO: send err back to ngui
+                        switch (err) {
+                            error.InvalidSeedMnemonic => {
+                                comm.write(self.allocator, self.uiwriter, .{
+                                    .lightning_error = .{ .code = .init_failed },
+                                }) catch |werr| {
+                                    logger.err("initWallet: send error to ui: {!}", .{werr});
+                                };
+                            },
+                            else => {},
+                        }
                     };
                 } else {
                     logger.warn("ignoring lnd wallet init: screen is locked", .{});
@@ -1160,7 +1170,15 @@ fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
     defer client.deinit();
     const res = client.call(.initwallet, .{ .unlock_password = unlock_pwd, .mnemonic = req.mnemonic }) catch |err| {
         logger.err("lnd client initwallet: {!}", .{err});
-        return Error.InitLndWallet;
+        std.fs.cwd().deleteFile(Config.LND_WALLETUNLOCK_PATH) catch |delerr| {
+            if (delerr != error.FileNotFound) {
+                logger.err("initwallet: delete stale wallet unlock file: {!}", .{delerr});
+            }
+        };
+        return switch (err) {
+            error.LndHttpBadStatusCode => Error.InvalidSeedMnemonic,
+            else => Error.InitLndWallet,
+        };
     };
     res.deinit(); // unused
 
