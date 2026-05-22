@@ -47,8 +47,19 @@ const cmark = "#bbbbbb ";
 /// defined in ui/c/ui.c
 extern fn preserve_main_active_tab() void;
 
+const Mode = enum {
+    setup,
+    startup,
+    wallet_locked,
+    operational,
+};
+
 var tab: struct {
     allocator: std.mem.Allocator,
+    parent: lvgl.FlexLayout,
+    mode: ?Mode = null,
+    wallet_init_pending: bool = false,
+    wallet_init_ctrlconn_requested: bool = false,
 
     info: struct {
         card: lvgl.Card, // parent
@@ -118,7 +129,9 @@ var tab: struct {
         preserve_main_active_tab();
     }
 
-    fn setMode(self: *@This(), m: enum { setup, startup, wallet_locked, operational }) void {
+    fn setMode(self: *@This(), m: Mode) void {
+        const mode_changed = self.mode != m;
+        self.mode = m;
         switch (m) {
             .setup => {
                 self.nowallet.show();
@@ -161,6 +174,10 @@ var tab: struct {
                 self.wallet_locked.hide();
             },
         }
+        if (mode_changed) {
+            self.parent.recalculateLayout();
+            self.parent.scrollToTop();
+        }
     }
 } = undefined;
 
@@ -169,6 +186,10 @@ var tab: struct {
 pub fn initTabPanel(allocator: std.mem.Allocator, cont: lvgl.Container) !void {
     tab.allocator = allocator;
     const parent = cont.flex(.column, .{});
+    tab.parent = parent;
+    tab.mode = null;
+    tab.wallet_init_pending = false;
+    tab.wallet_init_ctrlconn_requested = false;
     const recolor: lvgl.Label.Opt = .{ .recolor = true };
 
     // startup
@@ -293,13 +314,31 @@ pub fn initTabPanel(allocator: std.mem.Allocator, cont: lvgl.Container) !void {
 pub fn updateTabPanel(msg: comm.Message) !void {
     return switch (msg) {
         .lightning_error => |lnerr| switch (lnerr.code) {
-            .uninitialized => tab.setMode(.setup),
-            .locked => tab.setMode(.wallet_locked),
+            .uninitialized => {
+                if (!tab.wallet_init_pending) {
+                    tab.setMode(.setup);
+                } else {
+                    tab.setMode(.startup);
+                }
+            },
+            .locked => {
+                if (!tab.wallet_init_pending) {
+                    tab.setMode(.wallet_locked);
+                } else {
+                    tab.setMode(.startup);
+                }
+            },
             else => tab.setMode(.startup),
         },
-        .lightning_report => |rep| blk: {
+        .lightning_report => |rep| {
             tab.setMode(.operational);
-            break :blk updateReport(rep);
+            try updateReport(rep);
+
+            if (tab.wallet_init_pending and !tab.wallet_init_ctrlconn_requested) {
+                tab.wallet_init_ctrlconn_requested = true;
+                errdefer tab.wallet_init_ctrlconn_requested = false;
+                try comm.pipeWrite(.lightning_get_ctrlconn);
+            }
         },
         .lightning_genseed_result => |mnemonic| confirmSetupSeed(mnemonic),
         .lightning_ctrlconn => |conn| setupPairing(conn),
@@ -517,17 +556,28 @@ fn setupCommitSeed() !void {
     if (tab.seed_setup.?.mnemonic == null) {
         return error.LightningSetupNullMnemonic;
     }
+
     const wincont = tab.seed_setup.?.topwin.content().flex(.row, .{ .all = .center });
     wincont.deleteChildren();
     preserve_main_active_tab();
     _ = try lvgl.Spinner.new(wincont);
     _ = try lvgl.Label.new(wincont, "INITIALIZING WALLET ...", .{});
+
+    tab.wallet_init_pending = true;
+    errdefer tab.wallet_init_pending = false;
+    tab.wallet_init_ctrlconn_requested = false;
+
+    tab.setMode(.startup);
     try comm.pipeWrite(.{ .lightning_init_wallet = .{ .mnemonic = tab.seed_setup.?.mnemonic.?.items() } });
-    try comm.pipeWrite(.lightning_get_ctrlconn);
 }
 
 fn setupPairing(conn: comm.Message.LightningCtrlConn) !void {
     errdefer tab.destroySetup(); // TODO: display an error instead
+    defer {
+        tab.wallet_init_pending = false;
+        tab.wallet_init_ctrlconn_requested = false;
+    }
+
     if (tab.seed_setup == null) {
         return error.LightningSetupInactive;
     }
