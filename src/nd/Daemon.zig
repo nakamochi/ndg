@@ -142,7 +142,7 @@ pub fn init(opt: InitOpt) !Daemon {
     }
     // the order is important. when powering off, the services are shut down
     // in the same order appended here.
-    try svlist.append(sys.Service.init(opt.allocator, sys.Service.LND, .{ .stop_wait_sec = 600 }));
+    try svlist.append(sys.Service.init(opt.allocator, sys.Service.LND, .{ .stop_wait_sec = 60 }));
     try svlist.append(sys.Service.init(opt.allocator, sys.Service.BITCOIND, .{ .stop_wait_sec = 600 }));
 
     logger.debug("conf = {any}", .{opt.conf});
@@ -1259,9 +1259,11 @@ fn resetLndNode(self: *Daemon) !void {
     self.mu.unlock();
 
     // 1. stop lnd service
+    logger.info("resetLndNode: stopping lnd", .{});
     try self.services.stopWait(sys.Service.LND);
 
     // 2. delete all data directories
+    logger.info("resetLndNode: deleting lnd data", .{});
     try std.fs.cwd().deleteTree(Config.LND_DATA_DIR);
     try std.fs.cwd().deleteTree(Config.LND_LOG_DIR);
     try std.fs.cwd().deleteFile(Config.LND_WALLETUNLOCK_PATH);
@@ -1272,9 +1274,11 @@ fn resetLndNode(self: *Daemon) !void {
 
     // 3. generate a new blank config so lnd can start up again and respond
     // to status requests.
+    logger.info("resetLndNode: generating blank lnd config", .{});
     try self.conf.genLndConfig(.{ .autounlock = false });
 
     // 4. start lnd service
+    logger.info("resetLndNode: starting lnd", .{});
     try self.services.start(sys.Service.LND);
 }
 
