@@ -39,6 +39,7 @@ pub const Client = struct {
         walletbalance, // onchain balance
         // fwdinghistory, getchaninfo, getnodeinfo
         // watchtower: getinfo, stats, list, add, remove
+        addtower, // add a watchtower to wtclient
 
         fn apipath(self: @This()) []const u8 {
             return switch (self) {
@@ -47,6 +48,7 @@ pub const Client = struct {
                 .getinfo => "v1/getinfo",
                 .getnetworkinfo => "v1/graph/info",
                 .initwallet => "v1/initwallet",
+                .addtower => "v2/watchtower/client",
                 .listchannels => "v1/channels",
                 .pendingchannels => "v1/channels/pending",
                 .unlockwallet => "v1/unlockwallet",
@@ -66,6 +68,10 @@ pub const Client = struct {
                 //recovery_window: i32 = 0, // applies to each branch of BIP44 derivation path
                 //channel_backups
             },
+            .addtower => struct {
+                pubkey_hex: []const u8,
+                address: []const u8,
+            },
             .unlockwallet => struct {
                 unlock_password: []const u8, // from initwallet
                 // TODO: restore an existing wallet:
@@ -84,6 +90,7 @@ pub const Client = struct {
 
     pub fn ResultValue(comptime m: ApiMethod) type {
         return switch (m) {
+            .addtower => void,
             .feereport => FeeReport,
             .genseed => GeneratedSeed,
             .getinfo => LndInfo,
@@ -96,6 +103,24 @@ pub const Client = struct {
             .walletstatus => WalletStatus,
         };
     }
+
+    pub const Watchtower = struct {
+        pubkey_hex: []const u8,
+        address: []const u8,
+    };
+
+    pub const default_watchtowers = [_]Watchtower{
+        // https://lightningnetwork.plus/watchtower
+        .{
+            .pubkey_hex = "023bad37e5795654cecc69b43599da8bd5789ac633c098253f60494bde602b60bf",
+            .address = "iiu4epqzm6cydqhezueenccjlyzrqeruntlzbx47mlmdgfwgtrll66qd.onion:9911",
+        },
+        // https://vavok.net/bulltower_lightning_watchtower
+        .{
+            .pubkey_hex = "021cf043249acc0b497c6d8f291fd6fd18deba07f3c481777631bb469c6ea86446",
+            .address = "a6z5w3wiymr4je5py2hdvoknm26qyo4ghwmera2pod722nowou73uzid.onion:9911",
+        },
+    };
 
     pub const InitOpt = struct {
         allocator: std.mem.Allocator,
@@ -138,7 +163,7 @@ pub const Client = struct {
     }
 
     pub fn Result(comptime m: ApiMethod) type {
-        return if (@TypeOf(ResultValue(m)) == void) void else types.Deinitable(ResultValue(m));
+        return if (ResultValue(m) == void) void else types.Deinitable(ResultValue(m));
     }
 
     pub fn call(self: *Client, comptime apimethod: ApiMethod, args: MethodArgs(apimethod)) !Result(apimethod) {
@@ -180,7 +205,7 @@ pub const Client = struct {
             // TODO: return a more detailed error when the upstream improves.
             return Error.LndHttpBadStatusCode;
         }
-        if (@TypeOf(Result(apimethod)) == void) {
+        if (Result(apimethod) == void) {
             return; // void response; need no json parsing
         }
 
@@ -294,6 +319,34 @@ pub const Client = struct {
                 },
                 .payload = null,
             },
+            .addtower => |m| blk: {
+                const payload = p: {
+                    const pubkey_bytes = try hexDecodeAlloc(arena, args.pubkey_hex);
+                    const params: struct {
+                        pubkey: []const u8,
+                        address: []const u8,
+                    } = .{
+                        .pubkey = try base64EncodeAlloc(arena, pubkey_bytes),
+                        .address = args.address,
+                    };
+                    var buf = std.ArrayList(u8).init(arena);
+                    try std.json.stringify(params, .{ .emit_null_optional_fields = false }, buf.writer());
+                    break :p try buf.toOwnedSlice();
+                };
+                break :blk .{
+                    .httpmethod = .POST,
+                    .url = try std.Uri.parse(try std.fmt.allocPrint(arena, "{s}/{s}", .{ self.apibase, m.apipath() })),
+                    .xheaders = blk2: {
+                        if (self.macaroon.admin == null) {
+                            return Error.LndHttpMissingMacaroon;
+                        }
+                        var h = std.ArrayList(std.http.Header).init(arena);
+                        try h.append(.{ .name = authHeaderName, .value = self.macaroon.admin.? });
+                        break :blk2 try h.toOwnedSlice();
+                    },
+                    .payload = payload,
+                };
+            },
         };
         return reqinfo;
     }
@@ -315,6 +368,13 @@ pub const Client = struct {
     fn base64EncodeAlloc(gpa: std.mem.Allocator, v: []const u8) ![]const u8 {
         const buf = try gpa.alloc(u8, base64enc.calcSize(v.len));
         return base64enc.encode(buf, v); // always returns a slice of buf.len
+    }
+
+    fn hexDecodeAlloc(gpa: std.mem.Allocator, hex: []const u8) ![]u8 {
+        const buf = try gpa.alloc(u8, hex.len / 2);
+        errdefer gpa.free(buf);
+        _ = try std.fmt.hexToBytes(buf, hex);
+        return buf;
     }
 };
 

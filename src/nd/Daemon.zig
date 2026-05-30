@@ -1337,6 +1337,29 @@ fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
     };
     res2.deinit(); // unused
 
+    const new_client = try lndhttp.Client.init(.{
+        .allocator = self.allocator,
+        .tlscert_path = Config.LND_TLSCERT_PATH,
+        .macaroon_admin_path = Config.LND_MACAROON_ADMIN_PATH,
+    });
+    client.deinit();
+    client = new_client;
+
+    logger.info("initwallet: configuring default watchtowers", .{});
+    for (lndhttp.Client.default_watchtowers) |tower| {
+        client.call(.addtower, .{
+            .pubkey_hex = tower.pubkey_hex,
+            .address = tower.address,
+        }) catch |err| {
+            logger.warn("initwallet: addtower {s}@{s}: {!}", .{
+                tower.pubkey_hex,
+                tower.address,
+                err,
+            });
+            continue;
+        };
+    }
+
     // same as above genLndConfig but with auto-unlock enabled.
     // no need to restart lnd: it'll pick up the new config on next boot.
     logger.info("initwallet: re-generating lnd config with auto-unlock", .{});
