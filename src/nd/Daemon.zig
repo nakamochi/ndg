@@ -69,6 +69,8 @@ want_lnd_report: bool,
 lnd_timer: time.Timer,
 lnd_report_interval: u64 = 1 * time.ns_per_min,
 lnd_tls_reset_count: usize = 0,
+/// true after the daemon has tried the one-time recovery for a locked lnd wallet.
+lnd_wallet_unlock_recovery_attempted: bool = false,
 sysupdates_head_pulled: ?[]u8 = null,
 sysupdates_head_applied: ?[]u8 = null,
 next_head_refresh_ns: i128 = 0,
@@ -1097,15 +1099,129 @@ fn processLndReportError(self: *Daemon, err: anyerror) !void {
             self.want_lnd_report = false;
         },
         .LOCKED => {
-            try comm.write(self.allocator, self.uiwriter, msg_locked);
-            self.lnd_timer.reset();
-            self.want_lnd_report = false;
+            if (self.tryRecoverLockedLndWalletUnguarded()) {
+                switch (self.state) {
+                    .running, .standby => {
+                        try comm.write(self.allocator, self.uiwriter, msg_starting);
+                        self.lnd_timer.reset();
+                        self.want_lnd_report = true;
+                    },
+                    .stopped, .poweroff, .wallet_reset => {},
+                }
+                return;
+            }
+            switch (self.state) {
+                .running, .standby => {
+                    try comm.write(self.allocator, self.uiwriter, msg_locked);
+                    self.lnd_timer.reset();
+                    self.want_lnd_report = false;
+                },
+                .stopped, .poweroff, .wallet_reset => {},
+            }
         },
         .UNLOCKED, .RPC_ACTIVE, .WAITING_TO_START => comm.write(self.allocator, self.uiwriter, msg_starting),
         // active server indicates the lnd is ready to accept calls. so, the error
         // must have been due to factors other than unoperational lnd state.
         .SERVER_ACTIVE => err,
     };
+}
+
+/// Called after lnd reports a LOCKED wallet. The caller must hold self.mu,
+/// and this function returns with self.mu held. The unlock file read and REST
+/// call run without self.mu; the follow-up auto-unlock config persist
+/// revalidates daemon state under self.mu before proceeding.
+fn tryRecoverLockedLndWalletUnguarded(self: *Daemon) bool {
+    if (self.lnd_wallet_unlock_recovery_attempted) {
+        return false;
+    }
+    self.lnd_wallet_unlock_recovery_attempted = true;
+
+    self.mu.unlock();
+    defer self.mu.lock();
+
+    const recovered = self.tryRecoverLockedLndWalletUnlocked() catch |err| {
+        logger.err("lnd wallet unlock recovery: {!}", .{err});
+        return false;
+    };
+    return recovered;
+}
+
+/// Performs the one-time best-effort recovery for a locked lnd wallet when the
+/// wallet unlock password file exists but lnd.conf is missing the auto-unlock
+/// setting. Returns true only if the manual unlock REST call succeeds.
+fn tryRecoverLockedLndWalletUnlocked(self: *Daemon) !bool {
+    logger.warn("lnd wallet is locked; trying one-time recovery from {s}", .{Config.LND_WALLETUNLOCK_PATH});
+
+    const raw_pwd = std.fs.cwd().readFileAlloc(self.allocator, Config.LND_WALLETUNLOCK_PATH, 4096) catch |err| switch (err) {
+        error.FileNotFound => {
+            logger.warn("lnd wallet unlock recovery: {s} not found", .{Config.LND_WALLETUNLOCK_PATH});
+            return false;
+        },
+        else => {
+            logger.err("lnd wallet unlock recovery: read {s}: {!}", .{ Config.LND_WALLETUNLOCK_PATH, err });
+            return false;
+        },
+    };
+    defer self.allocator.free(raw_pwd);
+
+    const unlock_pwd = std.mem.trim(u8, raw_pwd, &std.ascii.whitespace);
+    if (unlock_pwd.len == 0) {
+        logger.err("lnd wallet unlock recovery: {s} is empty", .{Config.LND_WALLETUNLOCK_PATH});
+        return false;
+    }
+
+    var client = lndhttp.Client.init(.{
+        .allocator = self.allocator,
+        .tlscert_path = Config.LND_TLSCERT_PATH,
+    }) catch |err| {
+        logger.err("lnd wallet unlock recovery: client init: {!}", .{err});
+        return false;
+    };
+    defer client.deinit();
+
+    const res = client.call(.unlockwallet, .{ .unlock_password = unlock_pwd }) catch |err| {
+        logger.err("lnd wallet unlock recovery: unlockwallet: {!}", .{err});
+        return false;
+    };
+    res.deinit();
+
+    logger.info("lnd wallet unlock recovery: manual unlock succeeded", .{});
+    self.mu.lock();
+    defer self.mu.unlock();
+    if (!self.shouldPersistRecoveredLndWalletUnlockPath()) {
+        logger.warn(
+            "lnd wallet unlock recovery: skipping auto-unlock config persist while daemon state is {s}",
+            .{@tagName(self.state)},
+        );
+        return true;
+    }
+    self.persistLndWalletUnlockPath() catch |err| {
+        logger.err("lnd wallet unlock recovery: persist auto-unlock config: {!}", .{err});
+    };
+    return true;
+}
+
+fn shouldPersistRecoveredLndWalletUnlockPath(self: *const Daemon) bool {
+    return switch (self.state) {
+        .running, .standby => true,
+        .stopped, .poweroff, .wallet_reset => false,
+    };
+}
+
+fn persistLndWalletUnlockPath(self: *Daemon) !void {
+    var mut = self.conf.beginMutateLndConf(.{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            logger.warn("lnd wallet unlock recovery: {s} not found; generating fresh lnd config", .{Config.LND_CONF_PATH});
+            return self.conf.genLndConfig(.{ .autounlock = true });
+        },
+        else => return err,
+    };
+    defer mut.finish();
+
+    const sec = mut.lndconf.mainSection() orelse try mut.lndconf.appendDefaultSection();
+    try sec.setPropStr("wallet-unlock-password-file", Config.LND_WALLETUNLOCK_PATH);
+    try mut.persist();
+    logger.info("lnd wallet unlock recovery: persisted wallet-unlock-password-file in {s}", .{Config.LND_CONF_PATH});
 }
 
 fn sendLightningPairingConn(self: *Daemon) !void {
@@ -1670,6 +1786,34 @@ test "daemon: screen unlock" {
     gui_stdout.close();
     daemon.wait();
     try t.expect(daemon.screenstate == .unlocked);
+}
+
+test "daemon: recovered lnd wallet unlock path persists only in active states" {
+    const t = std.testing;
+
+    const pipe = try types.IoPipe.create();
+    defer pipe.close();
+    var daemon = try Daemon.init(.{
+        .allocator = t.allocator,
+        .conf = try dummyTestConfig(),
+        .uir = pipe.reader(),
+        .uiw = pipe.writer(),
+        .wpa = "/dev/null",
+    });
+    defer daemon.conf.deinit();
+    defer daemon.deinit();
+
+    daemon.state = .running;
+    try t.expect(daemon.shouldPersistRecoveredLndWalletUnlockPath());
+    daemon.state = .standby;
+    try t.expect(daemon.shouldPersistRecoveredLndWalletUnlockPath());
+
+    daemon.state = .stopped;
+    try t.expect(!daemon.shouldPersistRecoveredLndWalletUnlockPath());
+    daemon.state = .poweroff;
+    try t.expect(!daemon.shouldPersistRecoveredLndWalletUnlockPath());
+    daemon.state = .wallet_reset;
+    try t.expect(!daemon.shouldPersistRecoveredLndWalletUnlockPath());
 }
 
 fn dummyTestConfig() !Config {
