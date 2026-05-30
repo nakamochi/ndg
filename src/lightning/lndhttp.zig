@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const base64enc = std.base64.standard.Encoder;
+const logger = std.log.scoped(.lndhttp);
 
 const types = @import("../types.zig");
 
@@ -156,6 +157,15 @@ pub const Client = struct {
         defer req.deinit();
         if (reqinfo.payload) |p| {
             req.transfer_encoding = .{ .content_length = p.len };
+        }
+
+        logger.debug("lnd request: {s} {}", .{ @tagName(reqinfo.httpmethod), reqinfo.url });
+        if (reqinfo.payload) |p| {
+            if (apimethod == .initwallet or apimethod == .unlockwallet) {
+                logger.debug("lnd request payload: <redacted> (len={d})", .{p.len});
+            } else {
+                logger.debug("lnd request payload: {s}", .{p});
+            }
         }
 
         try req.send();
