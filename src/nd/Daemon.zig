@@ -1127,9 +1127,9 @@ fn processLndReportError(self: *Daemon, err: anyerror) !void {
 }
 
 /// Called after lnd reports a LOCKED wallet. The caller must hold self.mu,
-/// and this function returns with self.mu held. The actual filesystem and REST
-/// calls run without self.mu to avoid blocking other daemon operations and to
-/// avoid lock-order inversions with lnd config mutations.
+/// and this function returns with self.mu held. The unlock file read and REST
+/// call run without self.mu; the follow-up auto-unlock config persist
+/// revalidates daemon state under self.mu before proceeding.
 fn tryRecoverLockedLndWalletUnguarded(self: *Daemon) bool {
     if (self.lnd_wallet_unlock_recovery_attempted) {
         return false;
@@ -1186,10 +1186,26 @@ fn tryRecoverLockedLndWalletUnlocked(self: *Daemon) !bool {
     res.deinit();
 
     logger.info("lnd wallet unlock recovery: manual unlock succeeded", .{});
+    self.mu.lock();
+    defer self.mu.unlock();
+    if (!self.shouldPersistRecoveredLndWalletUnlockPath()) {
+        logger.warn(
+            "lnd wallet unlock recovery: skipping auto-unlock config persist while daemon state is {s}",
+            .{@tagName(self.state)},
+        );
+        return true;
+    }
     self.persistLndWalletUnlockPath() catch |err| {
         logger.err("lnd wallet unlock recovery: persist auto-unlock config: {!}", .{err});
     };
     return true;
+}
+
+fn shouldPersistRecoveredLndWalletUnlockPath(self: *const Daemon) bool {
+    return switch (self.state) {
+        .running, .standby => true,
+        .stopped, .poweroff, .wallet_reset => false,
+    };
 }
 
 fn persistLndWalletUnlockPath(self: *Daemon) !void {
@@ -1770,6 +1786,34 @@ test "daemon: screen unlock" {
     gui_stdout.close();
     daemon.wait();
     try t.expect(daemon.screenstate == .unlocked);
+}
+
+test "daemon: recovered lnd wallet unlock path persists only in active states" {
+    const t = std.testing;
+
+    const pipe = try types.IoPipe.create();
+    defer pipe.close();
+    var daemon = try Daemon.init(.{
+        .allocator = t.allocator,
+        .conf = try dummyTestConfig(),
+        .uir = pipe.reader(),
+        .uiw = pipe.writer(),
+        .wpa = "/dev/null",
+    });
+    defer daemon.conf.deinit();
+    defer daemon.deinit();
+
+    daemon.state = .running;
+    try t.expect(daemon.shouldPersistRecoveredLndWalletUnlockPath());
+    daemon.state = .standby;
+    try t.expect(daemon.shouldPersistRecoveredLndWalletUnlockPath());
+
+    daemon.state = .stopped;
+    try t.expect(!daemon.shouldPersistRecoveredLndWalletUnlockPath());
+    daemon.state = .poweroff;
+    try t.expect(!daemon.shouldPersistRecoveredLndWalletUnlockPath());
+    daemon.state = .wallet_reset;
+    try t.expect(!daemon.shouldPersistRecoveredLndWalletUnlockPath());
 }
 
 fn dummyTestConfig() !Config {
