@@ -515,7 +515,7 @@ fn confirmSetupSeed(mnemonic: []const []const u8) !void {
 }
 
 export fn nm_lnd_setup_commit_seed(_: *lvgl.LvEvent) callconv(.C) void {
-    setupCommitSeed() catch |err| logger.err("setupCommitSeed: {any}", .{err});
+    setupCommitSeed(0) catch |err| logger.err("setupCommitSeed: {any}", .{err});
 }
 
 fn restoreProceed() !void {
@@ -557,7 +557,7 @@ fn restoreProceed() !void {
     ss.mnemonic = try types.StringList.fromUnowned(alloc, normalized);
 
     widget.keyboardOff();
-    try setupCommitSeed();
+    try setupCommitSeed(comm.Message.LightningInitWallet.default_recovery_window);
 }
 
 fn showRestoreError(msg: [*:0]const u8) !void {
@@ -573,7 +573,7 @@ fn restoreErrModalCallback(_: usize) align(@alignOf(widget.ModalButtonCallbackFn
     preserve_main_active_tab();
 }
 
-fn setupCommitSeed() !void {
+fn setupCommitSeed(recovery_window: i32) !void {
     errdefer tab.destroySetup(); // TODO: display an error instead
     if (tab.seed_setup == null) {
         return error.LightningSetupInactive;
@@ -593,7 +593,10 @@ fn setupCommitSeed() !void {
     tab.wallet_init_ctrlconn_requested = false;
 
     tab.setMode(.startup);
-    try comm.pipeWrite(.{ .lightning_init_wallet = .{ .mnemonic = tab.seed_setup.?.mnemonic.?.items() } });
+    try comm.pipeWrite(.{ .lightning_init_wallet = .{
+        .mnemonic = tab.seed_setup.?.mnemonic.?.items(),
+        .recovery_window = recovery_window,
+    } });
 }
 
 fn setupPairing(conn: comm.Message.LightningCtrlConn) !void {

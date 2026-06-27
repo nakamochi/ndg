@@ -27,6 +27,8 @@ pub const LND_CONF_PATH = LND_HOMEDIR ++ "/lnd.mainnet.conf";
 pub const LND_TLSKEY_PATH = LND_HOMEDIR ++ "/.lnd/tls.key";
 pub const LND_TLSCERT_PATH = LND_HOMEDIR ++ "/.lnd/tls.cert";
 pub const LND_WALLETUNLOCK_PATH = LND_HOMEDIR ++ "/walletunlock.txt";
+/// Stores a non-zero wallet recovery window while an lnd restore rescan is pending.
+pub const LND_RECOVERY_WINDOW_PATH = LND_HOMEDIR ++ "/wallet-recovery-window.txt";
 pub const LND_MACAROON_RO_PATH = LND_DATA_DIR ++ "/chain/bitcoin/mainnet/readonly.macaroon";
 pub const LND_MACAROON_ADMIN_PATH = LND_DATA_DIR ++ "/chain/bitcoin/mainnet/admin.macaroon";
 
@@ -512,6 +514,44 @@ pub fn makeWalletUnlockFile(self: Config, outbuf: []u8, comptime raw_size: usize
     try self.chownLndUser(filepath);
 
     return hex;
+}
+
+/// Persists a non-zero lnd wallet recovery window until the recovery rescan finishes.
+pub fn writeLndRecoveryWindowFile(self: Config, recovery_window: i32) !void {
+    const filepath = LND_RECOVERY_WINDOW_PATH;
+    const allocator = self.arena.child_allocator;
+    const opt = .{ .mode = 0o400 };
+    const file = try std.io.BufferedAtomicFile.create(allocator, std.fs.cwd(), filepath, opt);
+    defer file.destroy(); // frees resources; does NOT delete the file
+
+    try std.fmt.format(file.writer(), "{d}\n", .{recovery_window});
+    try file.finish();
+    try self.chownLndUser(filepath);
+}
+
+/// Reads a pending lnd wallet recovery window. Null means no pending recovery window.
+pub fn readLndRecoveryWindowFile(_: Config) !?i32 {
+    var buf: [64]u8 = undefined;
+    const bytes = std.fs.cwd().readFile(LND_RECOVERY_WINDOW_PATH, &buf) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+
+    const trimmed = std.mem.trim(u8, bytes, &std.ascii.whitespace);
+    if (trimmed.len == 0) {
+        return null;
+    }
+
+    const recovery_window = try std.fmt.parseInt(i32, trimmed, 10);
+    return if (recovery_window > 0) recovery_window else null;
+}
+
+/// Removes the pending recovery-window marker.
+pub fn deleteLndRecoveryWindowFile() !void {
+    std.fs.cwd().deleteFile(LND_RECOVERY_WINDOW_PATH) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
 }
 
 /// options for genLndConfig.

@@ -1030,6 +1030,8 @@ fn sendLightningReport(self: *Daemon) !void {
 
     lndrep.channels = channels.items;
     try comm.write(self.allocator, self.uiwriter, .{ .lightning_report = lndrep });
+
+    self.maybeFinishLndRecovery(&client);
 }
 
 /// evaluates any error returned from `sendLightningReport`.
@@ -1129,12 +1131,26 @@ fn processLndReportError(self: *Daemon, err: anyerror) !void {
 /// Called after lnd reports a LOCKED wallet. The caller must hold self.mu,
 /// and this function returns with self.mu held. The unlock file read and REST
 /// call run without self.mu; the follow-up auto-unlock config persist
-/// revalidates daemon state under self.mu before proceeding.
+/// revalidates daemon state under self.mu before proceeding. If a restore
+/// recovery-window marker exists, the manual unlock keeps passing it and
+/// auto-unlock remains disabled until lnd reports that recovery finished.
 fn tryRecoverLockedLndWalletUnguarded(self: *Daemon) bool {
-    if (self.lnd_wallet_unlock_recovery_attempted) {
+    const recovery_pending = if (self.conf.readLndRecoveryWindowFile() catch |err| {
+        logger.err("lnd wallet unlock recovery: read pending recovery window before retry decision: {!}", .{err});
         return false;
+    }) |_| true else false;
+
+    // The legacy broken-auto-unlock repair must only be attempted once: a bad
+    // local password should not be retried forever. A pending recovery marker
+    // is different: after a reboot or lnd restart during restore, the wallet
+    // must be unlocked again with the same recovery window until the rescan is
+    // actually finished and the marker is cleared.
+    if (!recovery_pending) {
+        if (self.lnd_wallet_unlock_recovery_attempted) {
+            return false;
+        }
+        self.lnd_wallet_unlock_recovery_attempted = true;
     }
-    self.lnd_wallet_unlock_recovery_attempted = true;
 
     self.mu.unlock();
     defer self.mu.lock();
@@ -1148,7 +1164,8 @@ fn tryRecoverLockedLndWalletUnguarded(self: *Daemon) bool {
 
 /// Performs the one-time best-effort recovery for a locked lnd wallet when the
 /// wallet unlock password file exists but lnd.conf is missing the auto-unlock
-/// setting. Returns true only if the manual unlock REST call succeeds.
+/// setting or an lnd restore scan needs to be resumed with a recovery window.
+/// Returns true only if the manual unlock REST call succeeds.
 fn tryRecoverLockedLndWalletUnlocked(self: *Daemon) !bool {
     logger.warn("lnd wallet is locked; trying one-time recovery from {s}", .{Config.LND_WALLETUNLOCK_PATH});
 
@@ -1179,13 +1196,29 @@ fn tryRecoverLockedLndWalletUnlocked(self: *Daemon) !bool {
     };
     defer client.deinit();
 
-    const res = client.call(.unlockwallet, .{ .unlock_password = unlock_pwd }) catch |err| {
+    const recovery_window = self.conf.readLndRecoveryWindowFile() catch |err| blk: {
+        logger.err("lnd wallet unlock recovery: read pending recovery window: {!}", .{err});
+        break :blk null;
+    };
+    if (recovery_window) |window| {
+        logger.info("lnd wallet unlock recovery: resuming recovery with recovery_window={d}", .{window});
+    }
+
+    const res = client.call(.unlockwallet, .{
+        .unlock_password = unlock_pwd,
+        .recovery_window = recovery_window orelse 0,
+    }) catch |err| {
         logger.err("lnd wallet unlock recovery: unlockwallet: {!}", .{err});
         return false;
     };
     res.deinit();
 
     logger.info("lnd wallet unlock recovery: manual unlock succeeded", .{});
+    if (recovery_window != null) {
+        logger.info("lnd wallet unlock recovery: delaying auto-unlock config until recovery finishes", .{});
+        return true;
+    }
+
     self.mu.lock();
     defer self.mu.unlock();
     if (!self.shouldPersistRecoveredLndWalletUnlockPath()) {
@@ -1222,6 +1255,50 @@ fn persistLndWalletUnlockPath(self: *Daemon) !void {
     try sec.setPropStr("wallet-unlock-password-file", Config.LND_WALLETUNLOCK_PATH);
     try mut.persist();
     logger.info("lnd wallet unlock recovery: persisted wallet-unlock-password-file in {s}", .{Config.LND_CONF_PATH});
+}
+
+/// Caller must hold self.mu so the state check before persisting
+/// auto-unlock and clearing the recovery marker is synchronized with shutdown
+/// and wallet-reset transitions.
+fn maybeFinishLndRecovery(self: *Daemon, client: *lndhttp.Client) void {
+    const pending_window = self.conf.readLndRecoveryWindowFile() catch |err| {
+        logger.err("lnd recovery: read pending recovery window: {!}", .{err});
+        return;
+    } orelse return;
+
+    const recinfo = client.call(.getrecoveryinfo, {}) catch |err| {
+        logger.err("lnd recovery: getrecoveryinfo: {!}", .{err});
+        return;
+    };
+    defer recinfo.deinit();
+
+    if (!recinfo.value.recovery_mode) {
+        logger.warn(
+            "lnd recovery: pending recovery_window={d} but lnd reports recovery_mode=false; treating as finished",
+            .{pending_window},
+        );
+    } else if (!recinfo.value.recovery_finished) {
+        logger.info("lnd recovery: scan progress {d:.2}%", .{recinfo.value.progress * 100});
+        return;
+    } else {
+        logger.info("lnd recovery: scan finished; enabling auto-unlock and clearing recovery window", .{});
+    }
+
+    if (!self.shouldPersistRecoveredLndWalletUnlockPath()) {
+        logger.warn(
+            "lnd recovery: skipping auto-unlock enable and pending recovery window cleanup while daemon state is {s}",
+            .{@tagName(self.state)},
+        );
+        return;
+    }
+
+    self.persistLndWalletUnlockPath() catch |err| {
+        logger.err("lnd recovery: enable auto-unlock: {!}", .{err});
+        return;
+    };
+    Config.deleteLndRecoveryWindowFile() catch |err| {
+        logger.err("lnd recovery: delete pending recovery window: {!}", .{err});
+    };
 }
 
 fn sendLightningPairingConn(self: *Daemon) !void {
@@ -1280,16 +1357,38 @@ fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
         return Error.MakeWalletUnlockFileFail;
     };
 
+    if (req.recovery_window > 0) {
+        self.conf.writeLndRecoveryWindowFile(req.recovery_window) catch |err| {
+            logger.err("writeLndRecoveryWindowFile: {!}", .{err});
+            return Error.MakeWalletUnlockFileFail;
+        };
+    } else {
+        Config.deleteLndRecoveryWindowFile() catch |err| {
+            logger.err("delete stale lnd recovery window file: {!}", .{err});
+        };
+    }
+
     // commit the seed: initwallet needs no auth
-    logger.info("initwallet: committing new seed and an unlock password", .{});
+    if (req.recovery_window > 0) {
+        logger.info("initwallet: committing restored seed with recovery_window={d}", .{req.recovery_window});
+    } else {
+        logger.info("initwallet: committing new seed and an unlock password", .{});
+    }
     var client = try lndhttp.Client.init(.{ .allocator = self.allocator, .tlscert_path = Config.LND_TLSCERT_PATH });
     defer client.deinit();
-    const res = client.call(.initwallet, .{ .unlock_password = unlock_pwd, .mnemonic = req.mnemonic }) catch |err| {
+    const res = client.call(.initwallet, .{
+        .unlock_password = unlock_pwd,
+        .mnemonic = req.mnemonic,
+        .recovery_window = req.recovery_window,
+    }) catch |err| {
         logger.err("lnd client initwallet: {!}", .{err});
         std.fs.cwd().deleteFile(Config.LND_WALLETUNLOCK_PATH) catch |delerr| {
             if (delerr != error.FileNotFound) {
                 logger.err("initwallet: delete stale wallet unlock file: {!}", .{delerr});
             }
+        };
+        Config.deleteLndRecoveryWindowFile() catch |delerr| {
+            logger.err("initwallet: delete stale recovery window file: {!}", .{delerr});
         };
         return switch (err) {
             error.LndHttpBadStatusCode => Error.InvalidSeedMnemonic,
@@ -1330,17 +1429,31 @@ fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
 
     // unlock the wallet for the first time: required after initwallet.
     // it generates macaroon files and completes a wallet initialization.
-    logger.info("initwallet: unlocking new wallet for the first time", .{});
-    const res2 = client.call(.unlockwallet, .{ .unlock_password = unlock_pwd }) catch |err| {
+    if (req.recovery_window > 0) {
+        logger.info(
+            "initwallet: unlocking restored wallet for the first time with recovery_window={d}",
+            .{req.recovery_window},
+        );
+    } else {
+        logger.info("initwallet: unlocking new wallet for the first time", .{});
+    }
+    const res2 = client.call(.unlockwallet, .{
+        .unlock_password = unlock_pwd,
+        .recovery_window = req.recovery_window,
+    }) catch |err| {
         logger.err("lnd client unlockwallet: {!}", .{err});
         return Error.UnlockLndWallet;
     };
     res2.deinit(); // unused
 
-    // same as above genLndConfig but with auto-unlock enabled.
-    // no need to restart lnd: it'll pick up the new config on next boot.
-    logger.info("initwallet: re-generating lnd config with auto-unlock", .{});
-    try self.conf.genLndConfig(.{ .autounlock = true });
+    if (req.recovery_window > 0) {
+        logger.info("initwallet: delaying auto-unlock config until lnd recovery scan is finished", .{});
+    } else {
+        // same as above genLndConfig but with auto-unlock enabled.
+        // no need to restart lnd: it'll pick up the new config on next boot.
+        logger.info("initwallet: re-generating lnd config with auto-unlock", .{});
+        try self.conf.genLndConfig(.{ .autounlock = true });
+    }
 
     self.mu.lock();
     self.want_lnd_report = true; // trigger an immediate lnd report to update the UI
@@ -1382,7 +1495,11 @@ fn resetLndNode(self: *Daemon) !void {
     logger.info("resetLndNode: deleting lnd data", .{});
     try std.fs.cwd().deleteTree(Config.LND_DATA_DIR);
     try std.fs.cwd().deleteTree(Config.LND_LOG_DIR);
-    try std.fs.cwd().deleteFile(Config.LND_WALLETUNLOCK_PATH);
+    std.fs.cwd().deleteFile(Config.LND_WALLETUNLOCK_PATH) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    try Config.deleteLndRecoveryWindowFile();
     if (std.fs.path.dirname(Config.LND_TLSCERT_PATH)) |dir| {
         try std.fs.cwd().deleteTree(dir);
     }
