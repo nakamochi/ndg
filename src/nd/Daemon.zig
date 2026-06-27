@@ -1281,10 +1281,18 @@ fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
     };
 
     // commit the seed: initwallet needs no auth
-    logger.info("initwallet: committing new seed and an unlock password", .{});
+    if (req.recovery_window > 0) {
+        logger.info("initwallet: committing restored seed with recovery_window={d}", .{req.recovery_window});
+    } else {
+        logger.info("initwallet: committing new seed and an unlock password", .{});
+    }
     var client = try lndhttp.Client.init(.{ .allocator = self.allocator, .tlscert_path = Config.LND_TLSCERT_PATH });
     defer client.deinit();
-    const res = client.call(.initwallet, .{ .unlock_password = unlock_pwd, .mnemonic = req.mnemonic }) catch |err| {
+    const res = client.call(.initwallet, .{
+        .unlock_password = unlock_pwd,
+        .mnemonic = req.mnemonic,
+        .recovery_window = req.recovery_window,
+    }) catch |err| {
         logger.err("lnd client initwallet: {!}", .{err});
         std.fs.cwd().deleteFile(Config.LND_WALLETUNLOCK_PATH) catch |delerr| {
             if (delerr != error.FileNotFound) {
@@ -1330,8 +1338,18 @@ fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
 
     // unlock the wallet for the first time: required after initwallet.
     // it generates macaroon files and completes a wallet initialization.
-    logger.info("initwallet: unlocking new wallet for the first time", .{});
-    const res2 = client.call(.unlockwallet, .{ .unlock_password = unlock_pwd }) catch |err| {
+    if (req.recovery_window > 0) {
+        logger.info(
+            "initwallet: unlocking restored wallet for the first time with recovery_window={d}",
+            .{req.recovery_window},
+        );
+    } else {
+        logger.info("initwallet: unlocking new wallet for the first time", .{});
+    }
+    const res2 = client.call(.unlockwallet, .{
+        .unlock_password = unlock_pwd,
+        .recovery_window = req.recovery_window,
+    }) catch |err| {
         logger.err("lnd client unlockwallet: {!}", .{err});
         return Error.UnlockLndWallet;
     };

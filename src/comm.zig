@@ -249,11 +249,15 @@ pub const Message = union(MessageTag) {
 
     /// https://lightning.engineering/api-docs/api/lnd/wallet-unlocker/init-wallet
     pub const LightningInitWallet = struct {
+        pub const default_recovery_window: i32 = 2500;
+
         mnemonic: []const []const u8, // 24 words
         // TODO: support passphrase
         //passphrase: ?[]const u8,
 
-        // TODO: support extra fields for restoring an existing wallet, like recovery_window
+        // Non-zero only when restoring an existing wallet. This enables lnd's
+        // on-chain recovery scan and applies to each BIP44 branch.
+        recovery_window: i32 = 0,
     };
 
     pub const SysupdatesChan = enum(u8) {

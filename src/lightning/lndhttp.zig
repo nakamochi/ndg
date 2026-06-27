@@ -62,14 +62,15 @@ pub const Client = struct {
                 unlock_password: []const u8, // min 8 bytes
                 mnemonic: []const []const u8, // 24 words
                 passphrase: ?[]const u8 = null,
-                // TODO: restore an existing wallet:
-                //recovery_window: i32 = 0, // applies to each branch of BIP44 derivation path
+                // Address look-ahead for restoring an existing wallet. A zero
+                // value means no on-chain recovery scan should be attempted.
+                recovery_window: i32 = 0,
                 //channel_backups
             },
             .unlockwallet => struct {
                 unlock_password: []const u8, // from initwallet
-                // TODO: restore an existing wallet:
-                //recovery_window: i32 = 0, // applies to each branch of BIP44 derivation path
+                // Used to resume an interrupted recovery scan after lnd restart.
+                recovery_window: i32 = 0,
                 //channel_backups
             },
             .listchannels => struct {
@@ -219,10 +220,12 @@ pub const Client = struct {
                         wallet_password: []const u8, // base64
                         cipher_seed_mnemonic: []const []const u8,
                         aezeed_passphrase: ?[]const u8 = null, // base64
+                        recovery_window: i32,
                     } = .{
                         .wallet_password = try base64EncodeAlloc(arena, args.unlock_password),
                         .cipher_seed_mnemonic = args.mnemonic,
                         .aezeed_passphrase = if (args.passphrase) |p| try base64EncodeAlloc(arena, p) else null,
+                        .recovery_window = args.recovery_window,
                     };
                     var buf = std.ArrayList(u8).init(arena);
                     try std.json.stringify(params, .{ .emit_null_optional_fields = false }, buf.writer());
@@ -238,8 +241,10 @@ pub const Client = struct {
                 const payload = p: {
                     const params: struct {
                         wallet_password: []const u8, // base64
+                        recovery_window: i32,
                     } = .{
                         .wallet_password = try base64EncodeAlloc(arena, args.unlock_password),
+                        .recovery_window = args.recovery_window,
                     };
                     var buf = std.ArrayList(u8).init(arena);
                     try std.json.stringify(params, .{ .emit_null_optional_fields = false }, buf.writer());
@@ -317,6 +322,26 @@ pub const Client = struct {
         return base64enc.encode(buf, v); // always returns a slice of buf.len
     }
 };
+
+test "lndhttp: initwallet encodes recovery_window" {
+    const t = std.testing;
+    var client = Client{
+        .allocator = t.allocator,
+        .apibase = "https://localhost:10010",
+        .macaroon = .{ .readonly = null, .admin = null },
+        .httpClient = undefined,
+    };
+
+    const req = try client.formatreq(.initwallet, .{
+        .unlock_password = "password1",
+        .mnemonic = &.{"ability"},
+        .recovery_window = 2500,
+    });
+    defer req.deinit();
+
+    try t.expectEqual(std.http.Method.POST, req.value.httpmethod);
+    try t.expect(std.mem.indexOf(u8, req.value.payload.?, "\"recovery_window\":2500") != null);
+}
 
 /// general info and stats around the host lnd.
 pub const LndInfo = struct {
