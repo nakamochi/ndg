@@ -34,6 +34,7 @@ pub const Client = struct {
         feereport, // fees of all active channels
         getinfo, // general host node info
         getnetworkinfo, // visible graph info
+        getrecoveryinfo, // lnd restore rescan progress
         listchannels, // active channels
         pendingchannels, // pending open/close channels
         walletbalance, // onchain balance
@@ -46,6 +47,7 @@ pub const Client = struct {
                 .genseed => "v1/genseed",
                 .getinfo => "v1/getinfo",
                 .getnetworkinfo => "v1/graph/info",
+                .getrecoveryinfo => "v1/getrecoveryinfo",
                 .initwallet => "v1/initwallet",
                 .listchannels => "v1/channels",
                 .pendingchannels => "v1/channels/pending",
@@ -89,6 +91,7 @@ pub const Client = struct {
             .genseed => GeneratedSeed,
             .getinfo => LndInfo,
             .getnetworkinfo => NetworkInfo,
+            .getrecoveryinfo => RecoveryInfo,
             .initwallet => InitedWallet,
             .listchannels => ChannelsList,
             .pendingchannels => PendingList,
@@ -269,6 +272,17 @@ pub const Client = struct {
                 },
                 .payload = null,
             },
+            .getrecoveryinfo => |m| .{
+                .httpmethod = .GET,
+                .url = try std.Uri.parse(try std.fmt.allocPrint(arena, "{s}/{s}", .{ self.apibase, m.apipath() })),
+                .xheaders = blk: {
+                    const macaroon = self.macaroon.readonly orelse self.macaroon.admin orelse return Error.LndHttpMissingMacaroon;
+                    var h = std.ArrayList(std.http.Header).init(arena);
+                    try h.append(.{ .name = authHeaderName, .value = macaroon });
+                    break :blk try h.toOwnedSlice();
+                },
+                .payload = null,
+            },
             .listchannels => .{
                 .httpmethod = .GET,
                 .url = blk: {
@@ -343,6 +357,42 @@ test "lndhttp: initwallet encodes recovery_window" {
     try t.expect(std.mem.indexOf(u8, req.value.payload.?, "\"recovery_window\":2500") != null);
 }
 
+test "lndhttp: getrecoveryinfo uses readonly macaroon" {
+    const t = std.testing;
+    var client = Client{
+        .allocator = t.allocator,
+        .apibase = "https://localhost:10010",
+        .macaroon = .{ .readonly = "readonlymac", .admin = "adminmac" },
+        .httpClient = undefined,
+    };
+
+    const req = try client.formatreq(.getrecoveryinfo, {});
+    defer req.deinit();
+
+    try t.expectEqual(std.http.Method.GET, req.value.httpmethod);
+    try t.expectEqual(@as(usize, 1), req.value.xheaders.len);
+    try t.expectEqualStrings("grpc-metadata-macaroon", req.value.xheaders[0].name);
+    try t.expectEqualStrings("readonlymac", req.value.xheaders[0].value);
+}
+
+test "lndhttp: getrecoveryinfo can fall back to admin macaroon" {
+    const t = std.testing;
+    var client = Client{
+        .allocator = t.allocator,
+        .apibase = "https://localhost:10010",
+        .macaroon = .{ .readonly = null, .admin = "adminmac" },
+        .httpClient = undefined,
+    };
+
+    const req = try client.formatreq(.getrecoveryinfo, {});
+    defer req.deinit();
+
+    try t.expectEqual(std.http.Method.GET, req.value.httpmethod);
+    try t.expectEqual(@as(usize, 1), req.value.xheaders.len);
+    try t.expectEqualStrings("grpc-metadata-macaroon", req.value.xheaders[0].name);
+    try t.expectEqualStrings("adminmac", req.value.xheaders[0].value);
+}
+
 /// general info and stats around the host lnd.
 pub const LndInfo = struct {
     version: []const u8,
@@ -363,6 +413,12 @@ pub const LndInfo = struct {
     },
     uris: []const []const u8,
     // best_header_timestamp and features?
+};
+
+pub const RecoveryInfo = struct {
+    recovery_mode: bool,
+    recovery_finished: bool,
+    progress: f64,
 };
 
 pub const NetworkInfo = struct {
