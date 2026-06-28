@@ -1055,6 +1055,10 @@ fn processLndReportError(self: *Daemon, err: anyerror) !void {
 
     switch (err) {
         error.ConnectionRefused => {
+            // LND may stay down for a while during wallet reset/recovery.
+            // Do not spin on an immediate report request every main-loop tick.
+            self.lnd_timer.reset();
+            self.want_lnd_report = false;
             return comm.write(self.allocator, self.uiwriter, msg_starting);
         },
 
@@ -1094,6 +1098,8 @@ fn processLndReportError(self: *Daemon, err: anyerror) !void {
     const status = client.call(.walletstatus, {}) catch |err2| {
         return switch (err2) {
             error.ConnectionRefused => {
+                self.lnd_timer.reset();
+                self.want_lnd_report = false;
                 try comm.write(self.allocator, self.uiwriter, msg_starting);
             },
             error.TlsInitializationFailed => {
@@ -1473,6 +1479,68 @@ fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
     self.mu.unlock();
 }
 
+/// Stops LND for a destructive wallet reset. The normal service stop can time
+/// out while LND is in the middle of a wallet recovery rescan; in that case,
+/// escalate and then re-check the service state instead of failing immediately.
+fn stopLndForReset(self: *Daemon) !void {
+    self.services.stopWait(sys.Service.LND) catch |err| {
+        logger.warn("resetLndNode: graceful lnd stop failed: {!}; force-stopping", .{err});
+
+        self.runLndStopCommand("force-stop") catch |force_err| {
+            logger.warn("resetLndNode: sv force-stop lnd failed: {!}", .{force_err});
+        };
+
+        // sv force-stop sends a KILL on timeout, but can still exit non-zero if
+        // the service has not observed the state transition yet. Give runit one
+        // more short down check before using a direct pid kill fallback.
+        self.runLndDownCheck(10) catch |down_err| {
+            logger.warn("resetLndNode: lnd still not down after force-stop: {!}; killing pid", .{down_err});
+            try self.killLndPidAndWaitDown();
+        };
+    };
+}
+
+fn runLndStopCommand(self: *Daemon, command: []const u8) !void {
+    var proc = types.ChildProcess.init(&.{ "sv", command, sys.Service.LND }, self.allocator);
+    const term = try proc.spawnAndWait();
+    switch (term) {
+        .Exited => |code| if (code != 0) return Error.LndServiceStopFail,
+        else => return Error.LndServiceStopFail,
+    }
+}
+
+fn runLndDownCheck(self: *Daemon, wait_sec: u32) !void {
+    const wait_arg = try std.fmt.allocPrint(self.allocator, "{d}", .{wait_sec});
+    defer self.allocator.free(wait_arg);
+
+    var proc = types.ChildProcess.init(&.{ "sv", "-w", wait_arg, "down", sys.Service.LND }, self.allocator);
+    const term = try proc.spawnAndWait();
+    switch (term) {
+        .Exited => |code| if (code != 0) return Error.LndServiceStopFail,
+        else => return Error.LndServiceStopFail,
+    }
+}
+
+fn killLndPidAndWaitDown(self: *Daemon) !void {
+    // Last-resort reset-only fallback. runit normally owns signal delivery, but
+    // during wallet recovery LND can get wedged in shutdown after TERM. Parse the
+    // supervised pid from `sv status`, SIGKILL it, then wait for runit to observe
+    // the service as down before deleting wallet data.
+    var kill = types.ChildProcess.init(&.{
+        "sh",
+        "-c",
+        "pid=$(sv status lnd 2>/dev/null | sed -n 's/^run: .*: (pid \\([0-9][0-9]*\\)).*/\\1/p'); " ++
+            "if [ -n \"$pid\" ]; then kill -9 \"$pid\" 2>/dev/null || true; fi",
+    }, self.allocator);
+    const kill_term = try kill.spawnAndWait();
+    switch (kill_term) {
+        .Exited => |code| if (code != 0) return Error.LndServiceStopFail,
+        else => return Error.LndServiceStopFail,
+    }
+
+    try self.runLndDownCheck(10);
+}
+
 /// factory-resets lnd node; wipes out the wallet.
 fn resetLndNode(self: *Daemon) !void {
     self.mu.lock();
@@ -1499,23 +1567,29 @@ fn resetLndNode(self: *Daemon) !void {
     self.state = .wallet_reset;
     self.mu.unlock();
 
-    // 1. stop lnd service
+    // 1. stop lnd service. A wallet recovery rescan can make graceful stop take
+    // longer than usual; if runit times out, force-stop before deleting data.
     logger.info("resetLndNode: stopping lnd", .{});
-    try self.services.stopWait(sys.Service.LND);
+    try self.stopLndForReset();
 
     // 2. delete all data directories
     logger.info("resetLndNode: deleting lnd data", .{});
     try std.fs.cwd().deleteTree(Config.LND_DATA_DIR);
     try std.fs.cwd().deleteTree(Config.LND_LOG_DIR);
+    if (std.fs.path.dirname(Config.LND_TLSCERT_PATH)) |dir| {
+        try std.fs.cwd().deleteTree(dir);
+    }
+    // TODO: reset tor hidden service pubkey?
+
+    // Cancel any pending restore resume after old wallet data is gone. If data
+    // deletion fails, keep these files so a later restart still resumes the old
+    // wallet recovery path instead of leaving old data without its recovery state.
+    logger.info("resetLndNode: clearing lnd recovery files", .{});
     std.fs.cwd().deleteFile(Config.LND_WALLETUNLOCK_PATH) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
     try Config.deleteLndRecoveryWindowFile();
-    if (std.fs.path.dirname(Config.LND_TLSCERT_PATH)) |dir| {
-        try std.fs.cwd().deleteTree(dir);
-    }
-    // TODO: reset tor hidden service pubkey?
 
     // 3. generate a new blank config so lnd can start up again and respond
     // to status requests.
