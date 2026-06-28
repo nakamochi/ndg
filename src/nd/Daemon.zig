@@ -809,6 +809,7 @@ fn sendOnchainReport(self: *Daemon) !void {
         stats.netinfo.deinit();
         stats.mempool.deinit();
         if (stats.balance) |bal| bal.deinit();
+        if (stats.recovery) |recinfo| recinfo.deinit();
     }
 
     const btcrep: comm.Message.OnchainReport = .{
@@ -835,6 +836,12 @@ fn sendOnchainReport(self: *Daemon) !void {
             .minfee = stats.mempool.value.mempoolminfee,
             .fullrbf = stats.mempool.value.fullrbf,
         },
+        .lnd_recovery = if (stats.recovery) |recinfo| blk: {
+            if (!recinfo.value.recovery_mode or recinfo.value.recovery_finished) {
+                break :blk null;
+            }
+            break :blk .{ .progress = recinfo.value.progress };
+        } else null,
         .balance = if (stats.balance) |bal| .{
             .source = .lnd,
             .total = bal.value.total_balance,
@@ -854,6 +861,8 @@ const OnchainStats = struct {
     mempool: bitcoindrpc.Client.Result(.getmempoolinfo),
     // lnd wallet may be uninitialized
     balance: ?lndhttp.Client.Result(.walletbalance),
+    // lnd wallet restore rescan status, when available
+    recovery: ?lndhttp.Client.Result(.getrecoveryinfo),
 };
 
 /// call site must hold self.mu due to self.state read access.
@@ -867,25 +876,28 @@ fn fetchOnchainStats(self: *Daemon) !OnchainStats {
     const netinfo = try client.call(.getnetworkinfo, {});
     const mempool = try client.call(.getmempoolinfo, {});
 
-    const balance: ?lndhttp.Client.Result(.walletbalance) = blk: { // lndhttp.WalletBalance
-        if (self.state == .wallet_reset) {
-            break :blk null;
-        }
+    var balance: ?lndhttp.Client.Result(.walletbalance) = null;
+    var recovery: ?lndhttp.Client.Result(.getrecoveryinfo) = null;
+    if (self.state != .wallet_reset) {
         var lndc = lndhttp.Client.init(.{
             .allocator = self.allocator,
             .tlscert_path = Config.LND_TLSCERT_PATH,
             .macaroon_ro_path = Config.LND_MACAROON_RO_PATH,
             .macaroon_admin_path = Config.LND_MACAROON_ADMIN_PATH,
-        }) catch break :blk null;
-        defer lndc.deinit();
-        const res = lndc.call(.walletbalance, {}) catch break :blk null;
-        break :blk res;
-    };
+        }) catch null;
+        if (lndc) |*lnd_client| {
+            defer lnd_client.deinit();
+            balance = lnd_client.call(.walletbalance, {}) catch null;
+            recovery = lnd_client.call(.getrecoveryinfo, {}) catch null;
+        }
+    }
+
     return .{
         .bcinfo = bcinfo,
         .netinfo = netinfo,
         .mempool = mempool,
         .balance = balance,
+        .recovery = recovery,
     };
 }
 

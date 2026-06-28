@@ -23,6 +23,10 @@ var tab: struct {
     conn_in: lvgl.Label,
     conn_out: lvgl.Label,
     balance: struct {
+        recovery: struct {
+            row: lvgl.FlexLayout,
+            status: lvgl.Label,
+        },
         avail_bar: lvgl.Bar,
         avail_pct: lvgl.Label,
         total: lvgl.Label,
@@ -79,6 +83,21 @@ pub fn initTabPanel(cont: lvgl.Container) !void {
     // balance section
     {
         const card = try lvgl.Card.new(parent, "ON-CHAIN BALANCE", .{});
+        tab.balance.recovery.row = try lvgl.FlexLayout.new(card, .row, .{});
+        tab.balance.recovery.row.setWidth(lvgl.sizePercent(100));
+        tab.balance.recovery.row.setHeightToContent();
+        tab.balance.recovery.row.setPad(10, .column, .{});
+        tab.balance.recovery.row.setPad(8, .bottom, .{});
+        tab.balance.recovery.row.clearFlag(.scrollable);
+        _ = try lvgl.Spinner.new(tab.balance.recovery.row);
+        tab.balance.recovery.status = try lvgl.Label.new(
+            tab.balance.recovery.row,
+            "WALLET RECOVERY IN PROGRESS\nOn-chain balance may be incomplete.",
+            .{},
+        );
+        tab.balance.recovery.status.flexGrow(1);
+        tab.balance.recovery.row.hide();
+
         const row = try lvgl.FlexLayout.new(card, .row, .{});
         row.setWidth(lvgl.sizePercent(100));
         row.setHeightToContent();
@@ -137,6 +156,18 @@ pub fn updateTabPanel(rep: comm.Message.OnchainReport) !void {
     try tab.conn_out.setTextFmt(&buf, cmark ++ "CONNECTIONS OUT#\n{d}", .{rep.conn_out});
 
     // balance section
+    if (rep.lnd_recovery) |rec| {
+        const progress = @max(0, @min(100, rec.progress * 100));
+        tab.balance.recovery.row.show();
+        try tab.balance.recovery.status.setTextFmt(
+            &buf,
+            "WALLET RECOVERY IN PROGRESS\nOn-chain balance may be incomplete. {d:.2}%",
+            .{progress},
+        );
+    } else {
+        tab.balance.recovery.row.hide();
+    }
+
     if (rep.balance) |bal| {
         const confpct: f32 = pct: {
             if (bal.confirmed > bal.total) {

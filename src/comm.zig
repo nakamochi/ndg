@@ -179,6 +179,12 @@ pub const Message = union(MessageTag) {
             minfee: f32, // BTC/kvB
             fullrbf: bool,
         },
+        /// lnd wallet recovery status while an aezeed restore rescan is active.
+        /// During recovery the lnd wallet balance can be incomplete.
+        lnd_recovery: ?struct {
+            progress: f64, // 0.0-1.0
+        } = null,
+
         /// on-chain balance, all values in satoshis.
         /// may not be available due to disabled wallet, if bitcoin core is used,
         /// or lnd turned off/nonfunctional.
