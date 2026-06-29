@@ -325,7 +325,16 @@ fn poweroffThread(self: *Daemon) void {
 
     // wait each service until stopped or error.
     for (self.services.list) |*sv| {
-        _ = sv.stopWait() catch {};
+        sv.stopWait() catch |err| {
+            logger.warn("poweroff: stop {s} failed: {!}", .{ sv.name, err });
+            if (std.mem.eql(u8, sv.name, sys.Service.LND)) {
+                self.forceStopLndAfterTimeout("poweroff") catch |force_err| {
+                    logger.err("poweroff: force-stop lnd: {!}", .{force_err});
+                    continue;
+                };
+                sv.markStoppedSuccess();
+            }
+        };
         logger.info("{s} sv is now stopped; err={any}", .{ sv.name, sv.lastStopError() });
         self.sendPoweroffReport() catch |err| logger.err("sendPoweroffReport: {any}", .{err});
     }
@@ -1485,18 +1494,27 @@ fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
 fn stopLndForReset(self: *Daemon) !void {
     self.services.stopWait(sys.Service.LND) catch |err| {
         logger.warn("resetLndNode: graceful lnd stop failed: {!}; force-stopping", .{err});
+        try self.forceStopLndAfterTimeout("resetLndNode");
+        for (self.services.list) |*sv| {
+            if (std.mem.eql(u8, sv.name, sys.Service.LND)) {
+                sv.markStoppedSuccess();
+                break;
+            }
+        }
+    };
+}
 
-        self.runLndStopCommand("force-stop") catch |force_err| {
-            logger.warn("resetLndNode: sv force-stop lnd failed: {!}", .{force_err});
-        };
+fn forceStopLndAfterTimeout(self: *Daemon, context: []const u8) !void {
+    self.runLndStopCommand("force-stop") catch |force_err| {
+        logger.warn("{s}: sv force-stop lnd failed: {!}", .{ context, force_err });
+    };
 
-        // sv force-stop sends a KILL on timeout, but can still exit non-zero if
-        // the service has not observed the state transition yet. Give runit one
-        // more short down check before using a direct pid kill fallback.
-        self.runLndDownCheck(10) catch |down_err| {
-            logger.warn("resetLndNode: lnd still not down after force-stop: {!}; killing pid", .{down_err});
-            try self.killLndPidAndWaitDown();
-        };
+    // sv force-stop sends a KILL on timeout, but can still exit non-zero if
+    // the service has not observed the state transition yet. Give runit one
+    // more short down check before using a direct pid kill fallback.
+    self.runLndDownCheck(10) catch |down_err| {
+        logger.warn("{s}: lnd still not down after force-stop: {!}; killing pid", .{ context, down_err });
+        try self.killLndPidAndWaitDown();
     };
 }
 
