@@ -1932,28 +1932,29 @@ test "daemon: start-poweroff" {
     try t.expect(daemon.state == .stopped);
     try t.expect(daemon.poweroff_thread == null);
     for (daemon.services.list) |*sv| {
-        try t.expect(sv.stop_proc.spawned);
-        try t.expect(sv.stop_proc.waited);
+        if (std.mem.eql(u8, sv.name, sys.Service.LND)) {
+            // LND is stopped through the dedicated `sv down lnd` path,
+            // not through SysService.stopWait().
+            try t.expect(!sv.stop_proc.spawned);
+            try t.expect(!sv.stop_proc.waited);
+        } else {
+            try t.expect(sv.stop_proc.spawned);
+            try t.expect(sv.stop_proc.waited);
+        }
         try t.expectEqual(sys.Service.Status.stopped, sv.status());
     }
 
     const msg1 = try comm.read(arena, gui_reader);
     try tt.expectDeepEqual(comm.Message{ .poweroff_progress = .{ .services = &.{
-        .{ .name = "lnd", .stopped = false, .err = null },
+        .{ .name = "lnd", .stopped = true, .err = null },
         .{ .name = "bitcoind", .stopped = false, .err = null },
     } } }, msg1.value);
 
     const msg2 = try comm.read(arena, gui_reader);
     try tt.expectDeepEqual(comm.Message{ .poweroff_progress = .{ .services = &.{
         .{ .name = "lnd", .stopped = true, .err = null },
-        .{ .name = "bitcoind", .stopped = false, .err = null },
-    } } }, msg2.value);
-
-    const msg3 = try comm.read(arena, gui_reader);
-    try tt.expectDeepEqual(comm.Message{ .poweroff_progress = .{ .services = &.{
-        .{ .name = "lnd", .stopped = true, .err = null },
         .{ .name = "bitcoind", .stopped = true, .err = null },
-    } } }, msg3.value);
+    } } }, msg2.value);
 
     // TODO: ensure "poweroff" was executed once custom runner is in a zig release;
     // need custom runner to set up a global registry for child processes.
