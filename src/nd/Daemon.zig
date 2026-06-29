@@ -317,24 +317,16 @@ fn poweroffThread(self: *Daemon) void {
         logger.err("screen.backlight(.on) during poweroff: {any}", .{err});
     };
 
-    // initiate shutdown of all services concurrently.
+    // Stop services sequentially in dependency order. LND must fully stop
+    // before bitcoind is asked to shut down.
     for (self.services.list) |*sv| {
-        sv.stop() catch |err| logger.err("sv stop '{s}': {any}", .{ sv.name, err });
-    }
-    self.sendPoweroffReport() catch |err| logger.err("sendPoweroffReport: {any}", .{err});
-
-    // wait each service until stopped or error.
-    for (self.services.list) |*sv| {
-        sv.stopWait() catch |err| {
-            logger.warn("poweroff: stop {s} failed: {!}", .{ sv.name, err });
-            if (std.mem.eql(u8, sv.name, sys.Service.LND)) {
-                self.forceStopLndAfterTimeout("poweroff") catch |force_err| {
-                    logger.err("poweroff: force-stop lnd: {!}", .{force_err});
-                    continue;
-                };
-                sv.markStoppedSuccess();
-            }
-        };
+        if (std.mem.eql(u8, sv.name, sys.Service.LND)) {
+            self.stopLndForPoweroff(sv);
+        } else {
+            sv.stopWait() catch |err| {
+                logger.warn("poweroff: stop {s} failed: {!}", .{ sv.name, err });
+            };
+        }
         logger.info("{s} sv is now stopped; err={any}", .{ sv.name, sv.lastStopError() });
         self.sendPoweroffReport() catch |err| logger.err("sendPoweroffReport: {any}", .{err});
     }
@@ -343,6 +335,18 @@ fn poweroffThread(self: *Daemon) void {
     var off = types.ChildProcess.init(&.{"poweroff"}, self.allocator);
     const res = off.spawnAndWait();
     logger.info("poweroff: {any}", .{res});
+}
+
+fn stopLndForPoweroff(self: *Daemon, sv: *sys.Service) void {
+    self.runLndDownCheck(60) catch |err| {
+        logger.warn("poweroff: graceful lnd down failed: {!}; force-stopping", .{err});
+        self.forceStopLndAfterTimeout("poweroff") catch |force_err| {
+            logger.err("poweroff: force-stop lnd: {!}", .{force_err});
+            sv.markStoppedError(force_err);
+            return;
+        };
+    };
+    sv.markStoppedSuccess();
 }
 
 /// main thread entry point: watches for want_xxx flags and monitors network.
@@ -1492,16 +1496,16 @@ fn initWallet(self: *Daemon, req: comm.Message.LightningInitWallet) !void {
 /// out while LND is in the middle of a wallet recovery rescan; in that case,
 /// escalate and then re-check the service state instead of failing immediately.
 fn stopLndForReset(self: *Daemon) !void {
-    self.services.stopWait(sys.Service.LND) catch |err| {
-        logger.warn("resetLndNode: graceful lnd stop failed: {!}; force-stopping", .{err});
+    self.runLndDownCheck(60) catch |err| {
+        logger.warn("resetLndNode: graceful lnd down failed: {!}; force-stopping", .{err});
         try self.forceStopLndAfterTimeout("resetLndNode");
-        for (self.services.list) |*sv| {
-            if (std.mem.eql(u8, sv.name, sys.Service.LND)) {
-                sv.markStoppedSuccess();
-                break;
-            }
-        }
     };
+    for (self.services.list) |*sv| {
+        if (std.mem.eql(u8, sv.name, sys.Service.LND)) {
+            sv.markStoppedSuccess();
+            break;
+        }
+    }
 }
 
 fn forceStopLndAfterTimeout(self: *Daemon, context: []const u8) !void {
