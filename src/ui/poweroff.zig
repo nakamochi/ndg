@@ -5,6 +5,7 @@ const std = @import("std");
 const comm = @import("../comm.zig");
 const lvgl = @import("lvgl.zig");
 const symbol = @import("symbol.zig");
+const sys = @import("../sys/Service.zig");
 const widget = @import("widget.zig");
 
 const logger = std.log.scoped(.ui);
@@ -41,6 +42,11 @@ fn poweroffModalCallback(btn_idx: usize) align(@alignOf(widget.ModalButtonCallba
         logger.err("ProgressWin.create: {any}", .{err});
         return;
     };
+    if (global_progress_win) |win| {
+        win.showInitialServices() catch |err| {
+            logger.err("ProgressWin.showInitialServices: {any}", .{err});
+        };
+    }
 }
 
 var global_progress_win: ?ProgressWin = null;
@@ -98,6 +104,12 @@ const ProgressWin = struct {
 
     fn resetSvContainer(self: ProgressWin) void {
         self.svcont.deleteChildren();
+    }
+
+    fn showInitialServices(self: ProgressWin) !void {
+        self.resetSvContainer();
+        try self.addServiceStatus(sys.LND, false, null);
+        try self.addServiceStatus(sys.BITCOIND, false, null);
     }
 
     fn addServiceStatus(self: ProgressWin, name: []const u8, stopped: bool, err: ?[]const u8) !void {
