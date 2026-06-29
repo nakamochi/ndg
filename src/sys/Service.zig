@@ -78,6 +78,24 @@ pub fn lastStopError(self: *SysService) ?anyerror {
     return self.stop_err;
 }
 
+/// marks a service as successfully stopped after an external stop fallback.
+pub fn markStoppedSuccess(self: *SysService) void {
+    self.mu.lock();
+    defer self.mu.unlock();
+
+    self.stat = .{ .stopped = .{ .Exited = 0 } };
+    self.stop_err = null;
+}
+
+/// records that an external stop fallback failed.
+pub fn markStoppedError(self: *SysService, err: anyerror) void {
+    self.mu.lock();
+    defer self.mu.unlock();
+
+    self.stat = .stopping;
+    self.stop_err = err;
+}
+
 /// launches a service start procedure and returns as soon as the startup script
 /// terminates: whether the service actually started successefully is not necessarily
 /// indicated by the function return.
