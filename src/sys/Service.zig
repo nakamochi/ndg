@@ -92,6 +92,7 @@ pub fn markStoppedError(self: *SysService, err: anyerror) void {
     self.mu.lock();
     defer self.mu.unlock();
 
+    self.stat = .stopping;
     self.stop_err = err;
 }
 
